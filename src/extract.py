@@ -33,13 +33,13 @@ def guardar_precios(
         simbolo:str,
         intervalo:str
         ):
-    fichero = Path(carpeta_datos) / f"{simbolo}/precios_{simbolo}_{intervalo}.parquet"
+    fichero = Path(carpeta_datos) / f'{simbolo}/precios_{simbolo}_{intervalo}.parquet'
 
     # Asegurar que el directorio exista
     fichero.parent.mkdir(parents=True, exist_ok=True)
 
     df.to_parquet(fichero)
-    print(f"Fichero guardado correctamente en {Path(fichero)}")
+    print(f'Fichero guardado correctamente en {Path(fichero)}')
 
 
 '''
