@@ -5,6 +5,7 @@ Modulo de la fase de transformacion
 
 '''
 import pandas as pd
+import numpy as np
 from src.config import carpeta_datos
 from pathlib import Path
 from typing import List
@@ -50,6 +51,26 @@ def calcular_medias_moviles(
     # Concatena el bloque completo al DataFrame original de una sola vez
     return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
 
+def calcular_extremos(
+        df:pd.DataFrame,
+        columna:str,
+        periodo:int=20,
+        min_periodos: int | None = None
+)-> pd.DataFrame:
+    '''
+    Calcula los valores maximos y minimos en el periodo especificado.
+    '''
+    serie_origen = df[columna]
+    nuevas_columnas = {
+        f"{columna}_max{periodo}": serie_origen.rolling(
+            window=periodo, min_periods=min_periodos
+        ).max(),
+        f"{columna}_min{periodo}": serie_origen.rolling(
+                    window=periodo, min_periods=min_periodos
+                ).min()
+    }
+    return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
+
 
 def aplicar_lag(
         df:pd.DataFrame,
@@ -86,12 +107,11 @@ def calcular_variaciones_pct(
     # Operación matricial: targets - base / base
     sub_df = df[cols_target]
 
-    try:
-        pct_diffs = sub_df.sub(base, axis=0).div(base, axis=0)
-
-    except ZeroDivisionError:
-        print(f"Ocurrió un error: división por zero.")
-        return pd.DataFrame()
+    pct_diffs = (
+        sub_df.sub(base, axis=0)
+        .div(base, axis=0)
+        .replace([np.inf, -np.inf], np.nan) # reemplaza inf/-inf generados por eventuales ceros en la base
+    )
 
     # Renombrar columnas
     pct_diffs.columns = [f"{col}_pct_diff_{col_base}" for col in cols_target]
@@ -180,16 +200,14 @@ def main():
             lambda d: calcular_medias_moviles(
                 d, columna=columna, periodos=[periodo]
             )
-        )
-        .pipe(
+        ).pipe(
             lambda d: calcular_variaciones_pct(
                 d,
                 col_base=columna_sma,
                 cols_target=[columna],
                 lag_base=1,  # Base: SMA calculada hasta t-1
             )
-        )
-        .pipe(
+        ).pipe(
             lambda d: aplicar_lag(
                 d,
                 columnas=[columna_pct_diff],
@@ -199,10 +217,32 @@ def main():
         )
     )
 
+    # Calcular cierres maximos y minimos con lag de 1 dia
+    columna = 'Close'
+    periodo = 20
+    columnas_extremos = [f"{columna}_max{periodo}", f"{columna}_min{periodo}"]
+    df = (
+        df.pipe(
+            lambda d: calcular_extremos(
+                d,
+                columna= columna,
+                periodo=periodo
+            )
+        ).pipe(
+            lambda d: aplicar_lag(
+                d,
+                columnas=columnas_extremos,
+                lag=1,
+                quitar_original=True
+            )
+        )
+    )
+    columnas_extremos_lag = [f"{col}_lag1" for col in columnas_extremos]
+
 
     # Transformar columnas a variaciones porcentuales con respecto a Open del mismo dia
     posibles_labels = ['High', 'Low', 'Close'] # High, Low y Close del mismo dia
-    targets = cols_sma + posibles_labels
+    targets = cols_sma + posibles_labels + columnas_extremos_lag
     df = df.pipe(
         lambda d: calcular_variaciones_pct(
             d,
@@ -234,13 +274,13 @@ def main():
         )
 
     # Eliminar columnas no aplicables al modelado
-    columnas_a_quitar = cols_originales + cols_sma + ['Volume_sma20']
+    columnas_a_quitar = cols_originales + cols_sma + columnas_extremos_lag + ['Volume_sma20']
     df = df.drop(columns=columnas_a_quitar)
 
     # Eliminar valores missings iniciales
     df = df.dropna()
 
-    mostrar_asimetrias(df)
+    df.info()
     guardar_datos(df=df, simbolo=simbolo, intervalo=intervalo)
 
 
