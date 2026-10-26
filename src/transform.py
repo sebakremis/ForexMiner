@@ -99,7 +99,28 @@ def calcular_variaciones_pct(
     # Concatenar nuevas columnas
     return pd.concat([df, pct_diffs], axis=1)
 
-    
+# EDA
+
+def mostrar_asimetrias(df:pd.DataFrame):
+    """
+    Muestra la asimetría de las columnas numéricas del DataFrame.
+    """
+    print(df.select_dtypes(include="number").skew().sort_values(ascending=False).to_string())
+
+
+def guardar_datos(
+        df:pd.DataFrame,
+        simbolo:str,
+        intervalo:str
+        ):
+    fichero = Path(carpeta_datos) / f'{simbolo}/datos_depurados_{simbolo}_{intervalo}.parquet'
+
+    # Asegurar que el directorio exista
+    fichero.parent.mkdir(parents=True, exist_ok=True)
+
+    df.to_parquet(fichero)
+    print(f'Fichero guardado correctamente en {Path(fichero)}')
+
 '''
 Bloque principal
 
@@ -111,6 +132,9 @@ def main():
     simbolo = 'SPY'
     intervalo = '1d'
     df = cargar_precios(simbolo=simbolo, intervalo=intervalo)
+
+    # Capturar columnas originales
+    cols_originales = [col for col in df.columns]
 
     # Feature Engineering
 
@@ -141,10 +165,44 @@ def main():
             )
         )
     )
+    # Capturar columnas de medias moviles
+    cols_sma = [col for col in df.columns if "_sma" in col]
+
+    # Volumen: tasa de cambio porcentual respecto a su promedio
+    periodo = 20
+    columna = "Volume"
+    columna_sma = f"{columna}_sma{periodo}"
+    columna_pct_diff = f"{columna}_pct_diff_{columna_sma}"
+
+
+    df = (
+        df.pipe(
+            lambda d: calcular_medias_moviles(
+                d, columna=columna, periodos=[periodo]
+            )
+        )
+        .pipe(
+            lambda d: calcular_variaciones_pct(
+                d,
+                col_base=columna_sma,
+                cols_target=[columna],
+                lag_base=1,  # Base: SMA calculada hasta t-1
+            )
+        )
+        .pipe(
+            lambda d: aplicar_lag(
+                d,
+                columnas=[columna_pct_diff],
+                lag=1,
+                quitar_original=True,  
+            )
+        )
+    )
 
 
     # Transformar columnas a variaciones porcentuales con respecto a Open del mismo dia
-    targets = ['High', 'Low', 'Close']
+    posibles_labels = ['High', 'Low', 'Close'] # High, Low y Close del mismo dia
+    targets = cols_sma + posibles_labels
     df = df.pipe(
         lambda d: calcular_variaciones_pct(
             d,
@@ -153,8 +211,19 @@ def main():
             lag_base=0,
         )
     )
+    # Lag de 1 para usar valores previos de High, Low y Close como predictores
 
-    # Transformar a variacion porcentual respecto de Close del dia anterior
+    df = df.pipe(
+            lambda d: aplicar_lag(
+                d,
+                columnas=[f"{col}_pct_diff_Open" for col in posibles_labels],
+                lag=1,
+                quitar_original=False,  
+            )
+        )
+
+
+    # Transformar Open a variacion porcentual respecto de Close del dia anterior
     df = df.pipe(
             lambda d: calcular_variaciones_pct(
                 d,
@@ -164,7 +233,15 @@ def main():
             )
         )
 
-    df.info()
+    # Eliminar columnas no aplicables al modelado
+    columnas_a_quitar = cols_originales + cols_sma + ['Volume_sma20']
+    df = df.drop(columns=columnas_a_quitar)
+
+    # Eliminar valores missings iniciales
+    df = df.dropna()
+
+    mostrar_asimetrias(df)
+    guardar_datos(df=df, simbolo=simbolo, intervalo=intervalo)
 
 
 
