@@ -68,7 +68,7 @@ def split_ultimo(
 Bloque principal
 
 Ejecucion desde el terminal:
-python -m src.modeling
+python -m src.reg_modeling
 '''
 def main():
     # Cargar fichero de precios

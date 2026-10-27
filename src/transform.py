@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 from src.config import carpeta_datos
 from pathlib import Path
-from typing import List
+from typing import List, Tuple, Optional
 from sklearn.preprocessing import PowerTransformer
 
 # Manejo de datos
@@ -202,6 +202,71 @@ def transformar_yeo(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     return df_out
 
 
+def categorizar_en_cuantiles(
+    df: pd.DataFrame,
+    columna: str,
+    num_cuantiles: int = 5,
+    quitar_original: bool = True,
+) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+    """Transforma una columna continua en cuantiles globales.
+
+    Parámetros:
+    - df: DataFrame con los datos.
+    - columna: Nombre de la columna continua a transformar.
+    - num_cuantiles: Cantidad de cuantiles solicitados.
+    - quitar_original: Si se elimina la columna original tras crear los cuantiles.
+
+    Retorna:
+    - (df_out, df_bins): Tupla con el nuevo DataFrame y un DataFrame con los
+      límites inferiores y superiores de cada cuantil generado. Si no fue posible
+      calcular los cuantiles, df_bins será None.
+    """
+    df_out = df.copy()
+    nueva_columna = f"{columna}_cat"
+
+    serie = df_out[columna]
+    valid_count = serie.count()
+    df_bins = None
+
+    # Verificación de datos suficientes y varianza
+    if valid_count < num_cuantiles or serie.nunique() < 2:
+        df_out[nueva_columna] = np.nan
+    else:
+        try:
+            # retbins=True devuelve la serie categórica y el array con los bordes
+            cuantiles, bins = pd.qcut(
+                serie,
+                q=num_cuantiles,
+                labels=False,
+                duplicates="drop",
+                retbins=True,
+            )
+
+            # Sumar 1 para etiquetar de 1 a N
+            df_out[nueva_columna] = cuantiles + 1
+
+            # Construir tabla de límites por categoría
+            # len(bins) - 1 corresponde al número real de cuantiles formados
+            num_categorias_creadas = len(bins) - 1
+            df_bins = pd.DataFrame(
+                {
+                    "categoria": range(1, num_categorias_creadas + 1),
+                    "lim_inferior": bins[:-1],
+                    "lim_superior": bins[1:],
+                }
+            )
+
+        except ValueError:
+            df_out[nueva_columna] = np.nan
+
+    # Convertir a tipo 'category'
+    df_out[nueva_columna] = df_out[nueva_columna].astype("category")
+
+    # Eliminar columna original si corresponde
+    if quitar_original:
+        df_out = df_out.drop(columns=[columna])
+
+    return df_out, df_bins
 
 '''
 Bloque principal
