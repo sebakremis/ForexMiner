@@ -76,7 +76,7 @@ def aplicar_lag(
         df:pd.DataFrame,
         columnas:List[str],
         lag: int=1,
-        quitar_original:bool=True
+        quitar_original:bool=False
 ) ->pd.DataFrame:
     '''
     Aplica un desfase temporal (.shift) sobre las columnas indicadas.
@@ -119,6 +119,22 @@ def calcular_variaciones_pct(
     # Concatenar nuevas columnas
     return pd.concat([df, pct_diffs], axis=1)
 
+
+def calcular_varianza(
+        df:pd.DataFrame,
+        col:str,
+        periodo:int=20,
+        min_periodos: int | None = None
+)->pd.DataFrame:
+    serie_origen = df[col]
+    nueva_columna = {
+        f"{col}_var{periodo}": serie_origen.rolling(
+            window= periodo, min_periods= min_periodos
+        ).var()
+    }
+    return pd.concat([df, pd.DataFrame(nueva_columna, index=df.index)], axis=1)
+
+
 # EDA
 
 def mostrar_asimetrias(df:pd.DataFrame):
@@ -141,6 +157,7 @@ def guardar_datos(
     df.to_parquet(fichero)
     print(f'Fichero guardado correctamente en {Path(fichero)}')
 
+
 '''
 Bloque principal
 
@@ -153,114 +170,85 @@ def main():
     intervalo = '1d'
     df = cargar_precios(simbolo=simbolo, intervalo=intervalo)
 
-    # Capturar columnas originales
-    cols_originales = [col for col in df.columns]
-
     # Feature Engineering
+
+    # Columnas lag1 para evitar lookahead bias
+    columnas_lag = ['Close', 'Volume', 'High', 'Low']
+
+    df = df.pipe(
+        lambda d: aplicar_lag(
+            d,
+            columnas=columnas_lag,
+            lag=1,
+            quitar_original=False
+        )
+    )
 
     # Calcular medias moviles
     periodos_ma = [5,10,20]
 
-    # Precios Open: sin lag al aplicar luego de la apertura
+    # Precios Close: lag = 1 para evitar Lookahead Bias
     df = df.pipe(
-        lambda d: calcular_medias_moviles(
-            d,
-            columna="Open",
-            periodos= periodos_ma
-        )
+            lambda d: calcular_medias_moviles(
+                d, columna="Close_lag1", periodos=periodos_ma
+            )
     )
 
-    # Precios Close: lag = 1 para evitar Lookahead Bias
-    df = (
-        df.pipe(
-            lambda d: calcular_medias_moviles(
-                d, columna="Close", periodos=periodos_ma
-            )
-        ).pipe(
-            lambda d: aplicar_lag(
-                d,
-                # Selecciona las columnas recien creadas
-                columnas=[f"Close_sma{p}" for p in periodos_ma],
-                lag=1,
-            )
-        )
-    )
     # Capturar columnas de medias moviles
     cols_sma = [col for col in df.columns if "_sma" in col]
 
     # Volumen: tasa de cambio porcentual respecto a su promedio
     periodo = 20
-    columna = "Volume"
-    columna_sma = f"{columna}_sma{periodo}"
-    columna_pct_diff = f"{columna}_pct_diff_{columna_sma}"
+    col_volumen = "Volume_lag1"
+    col_volumen_sma = f"{col_volumen}_sma{periodo}"
 
-
-    df = (
-        df.pipe(
+    df = df.pipe(
             lambda d: calcular_medias_moviles(
-                d, columna=columna, periodos=[periodo]
-            )
-        ).pipe(
-            lambda d: calcular_variaciones_pct(
-                d,
-                col_base=columna_sma,
-                cols_target=[columna],
-                lag_base=1,  # Base: SMA calculada hasta t-1
-            )
-        ).pipe(
-            lambda d: aplicar_lag(
-                d,
-                columnas=[columna_pct_diff],
-                lag=1,
-                quitar_original=True,  
+                d, columna=col_volumen, periodos=[periodo]
             )
         )
-    )
 
     # Calcular cierres maximos y minimos con lag de 1 dia
-    columna = 'Close'
+    columna = 'Close_lag1'
     periodo = 20
     columnas_extremos = [f"{columna}_max{periodo}", f"{columna}_min{periodo}"]
-    df = (
-        df.pipe(
+    df = df.pipe(
             lambda d: calcular_extremos(
                 d,
                 columna= columna,
                 periodo=periodo
             )
-        ).pipe(
-            lambda d: aplicar_lag(
+        )
+
+    # Capturar columnas absolutas
+    cols_absolutas = [col for col in df.columns]
+
+    # Calcular variaciones porcentuales
+
+    # Volumen
+    df = df.pipe(
+            lambda d: calcular_variaciones_pct(
                 d,
-                columnas=columnas_extremos,
-                lag=1,
-                quitar_original=True
+                col_base=col_volumen_sma,
+                cols_target=[col_volumen],
+                lag_base=1,  # Base: SMA calculada hasta t-1
             )
         )
-    )
-    columnas_extremos_lag = [f"{col}_lag1" for col in columnas_extremos]
 
 
-    # Transformar columnas a variaciones porcentuales con respecto a Open del mismo dia
-    posibles_labels = ['High', 'Low', 'Close'] # High, Low y Close del mismo dia
-    targets = cols_sma + posibles_labels + columnas_extremos_lag
+    # Transformar columnas a diferencias porcentuales con respecto a Open del mismo dia
+    columnas_diff_open = cols_sma + columnas_extremos + [
+        'High', 'Low', 'Close', 'High_lag1', 'Low_lag1', 'Close_lag1'
+        ] # High, Low y Close sin lag para posibles labels / con lag para predictores
+
     df = df.pipe(
         lambda d: calcular_variaciones_pct(
             d,
             col_base='Open',
-            cols_target=targets,
+            cols_target=columnas_diff_open,
             lag_base=0,
         )
     )
-    # Lag de 1 para usar valores previos de High, Low y Close como predictores
-
-    df = df.pipe(
-            lambda d: aplicar_lag(
-                d,
-                columnas=[f"{col}_pct_diff_Open" for col in posibles_labels],
-                lag=1,
-                quitar_original=False,  
-            )
-        )
 
 
     # Transformar Open a variacion porcentual respecto de Close del dia anterior
@@ -273,16 +261,36 @@ def main():
             )
         )
 
+    # Obtener rendimiento y varianza diaria con lag: Cierre en t-1 vs Cierre en t-2
+    df = df.pipe(
+                lambda d: calcular_variaciones_pct(
+                    d,
+                    col_base='Close',
+                    cols_target=['Close_lag1'],
+                    lag_base=2,
+                )
+            )
+
+    # Renombrar columna
+    columna_nueva = 'Daily_return_lag1'
+    df = df.rename(columns={'Close_lag1_pct_diff_Close' : columna_nueva})
+
+    df = df.pipe(
+        lambda d: calcular_varianza(
+            d,
+            col=columna_nueva,
+            periodo=20,
+        )
+    )
+
     # Eliminar columnas no aplicables al modelado
-    columnas_a_quitar = cols_originales + cols_sma + columnas_extremos_lag + ['Volume_sma20']
-    df = df.drop(columns=columnas_a_quitar)
+    df = df.drop(columns=cols_absolutas)
 
     # Eliminar valores missings iniciales
     df = df.dropna()
 
     df.info()
     guardar_datos(df=df, simbolo=simbolo, intervalo=intervalo)
-
 
 
 if __name__ == '__main__':
