@@ -33,15 +33,21 @@ def cargar_precios(
 def guardar_datos(
         df:pd.DataFrame,
         simbolo:str,
-        intervalo:str
+        intervalo:str,
+        cols_exclude:list[str] | None = None
         ):
-    fichero = Path(carpeta_datos) / f'{simbolo}/datos_depurados_{simbolo}_{intervalo}.parquet'
+    fichero = Path(carpeta_datos) / f"{simbolo}/datos_depurados_{simbolo}_{intervalo}.parquet"
 
     # Asegurar que el directorio exista
     fichero.parent.mkdir(parents=True, exist_ok=True)
 
     df.to_parquet(fichero)
     print(f'Fichero guardado correctamente en {Path(fichero)}')
+
+    if cols_exclude:
+        df_cols_exclude = pd.DataFrame(cols_exclude, columns=['Columna'])
+        fichero_exclude = Path(carpeta_datos) / f"{simbolo}/cols_exclude_{simbolo}_{intervalo}.csv"
+        df_cols_exclude.to_csv(fichero_exclude, index=False, encoding="utf-8", header=False)
 
 
 # Feature Engineering
@@ -223,18 +229,17 @@ def main():
         )
     )
 
-    # Calcular medias moviles
+    # Calcular medias moviles [Media Corta, Media Larga]
     periodos_ma = [20,50]
-
-    # Precios Close: lag = 1 para evitar Lookahead Bias
+    columna_sma = 'Close_lag1' # Precios Close lag1 para evitar Lookahead Bias
+    col_sma_corta = f"{columna_sma}_sma{periodos_ma[0]}"
+    col_sma_larga = f"{columna_sma}_sma{periodos_ma[1]}"
+    
     df = df.pipe(
             lambda d: calcular_medias_moviles(
-                d, columna="Close_lag1", periodos=periodos_ma, min_periodos=20
-            ) # min_periodos = 20: empieza a calcular la media larga antes, reduciendo missings iniciales
+                d, columna= columna_sma, periodos=periodos_ma
+            )
     )
-
-    # Capturar columnas de medias moviles
-    cols_sma = [col for col in df.columns if "_sma" in col]
 
     # Volumen: tasa de cambio porcentual respecto a su promedio
     periodo = 20
@@ -262,7 +267,17 @@ def main():
     # Capturar columnas absolutas
     cols_absolutas = [col for col in df.columns]
 
-    # Calcular variaciones porcentuales
+    # Calcular columnas relativas: variaciones porcentuales
+
+    # Diferencia entre medias
+    df = df.pipe(
+                lambda d: calcular_variaciones_pct(
+                    d,
+                    col_base=col_sma_larga,
+                    cols_target=[col_sma_corta],
+                    lag_base=0, 
+                )
+            )
 
     # Volumen
     df = df.pipe(
@@ -276,8 +291,8 @@ def main():
 
 
     # Transformar columnas a diferencias porcentuales con respecto a Open del mismo dia
-    columnas_diff_open = cols_sma + columnas_extremos + [
-        'High', 'Low', 'Close', 'High_lag1', 'Low_lag1', 'Close_lag1'
+    columnas_diff_open = columnas_extremos + [
+        'High', 'Low', 'Close', 'High_lag1', 'Low_lag1', 'Close_lag1', col_sma_larga
         ] # High, Low y Close sin lag para posibles labels / con lag para predictores
 
     df = df.pipe(
@@ -317,15 +332,16 @@ def main():
     df = transformar_log(df, cols=columnas_log)
     df = transformar_yeo(df, cols=columnas_yeo)
 
-
-    # Eliminar columnas no aplicables al modelado
-    df = df.drop(columns=cols_absolutas)
-
     # Eliminar valores missings iniciales
     df = df.dropna()
 
     df.info()
-    guardar_datos(df=df, simbolo=simbolo, intervalo=intervalo)
+    guardar_datos(
+        df=df, 
+        simbolo=simbolo, 
+        intervalo=intervalo, 
+        cols_exclude=cols_absolutas
+        )
 
 
 if __name__ == '__main__':
