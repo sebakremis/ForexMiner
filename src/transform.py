@@ -6,16 +6,17 @@ Modulo de la fase de transformacion
 '''
 import pandas as pd
 import numpy as np
-from src.config import carpeta_datos
+from src.config import carpeta_datos, intervalo_defecto
 from pathlib import Path
 from typing import List, Tuple, Optional
 from sklearn.preprocessing import PowerTransformer
+import argparse
 
 # Manejo de datos
 
 def cargar_precios(
         simbolo:str,
-        intervalo:str='1d'
+        intervalo:str=intervalo_defecto
 )->pd.DataFrame:
     fichero_precios = Path(carpeta_datos) / f'{simbolo}/precios_{simbolo}_{intervalo}.parquet'
     try:
@@ -274,10 +275,11 @@ Bloque principal
 Ejecucion desde el terminal:
 python -m src.transform
 '''
-def main():
-    # Cargar fichero de precios
-    simbolo = 'SPY'
-    intervalo = '1d'
+def main(
+        simbolo:str='SPY',
+        intervalo:str=intervalo_defecto
+):
+    # Cargar fichero de precios    
     df = cargar_precios(simbolo=simbolo, intervalo=intervalo)
 
     # Feature Engineering
@@ -410,4 +412,13 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--simbolo",
+        type=str,
+        default="SPY",
+        help="Símbolo a cargar (por defecto: SPY)",
+    )
+
+    args = parser.parse_args()
+    main(simbolo=args.simbolo)

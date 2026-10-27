@@ -5,13 +5,14 @@ Modulo para la fase de extraccion
 '''
 import yfinance as yf
 import pandas as pd
-from src.config import carpeta_datos, fecha_inicio_defecto
+from src.config import carpeta_datos, fecha_inicio_defecto, intervalo_defecto
 from pathlib import Path
 from typing import Optional
+import argparse
 
 def extraer_precios(
         simbolo:str='SPY',
-        intervalo:str='1d',
+        intervalo:str=intervalo_defecto,
         fecha_inicio: str = fecha_inicio_defecto,
         fecha_fin: Optional[str] = None,
 )->pd.DataFrame:
@@ -23,7 +24,8 @@ def extraer_precios(
         auto_adjust= True
     )
     columnas_innecesarias = ['Dividends', 'Stock Splits', 'Capital Gains']
-    df.drop(columnas_innecesarias, axis=1, inplace=True)
+    drop_cols = [col for col in columnas_innecesarias if col in df.columns]
+    df.drop(drop_cols, axis=1, inplace=True)
 
     return df
 
@@ -48,13 +50,23 @@ Bloque principal
 Ejecucion desde el terminal:
 python -m src.extract
 '''
-def main():
-    simbolo = 'SPY'
-    intervalo = '1d'
+def main(
+        simbolo:str = 'SPY',
+        intervalo:str = intervalo_defecto
+):
     df = extraer_precios(simbolo=simbolo, intervalo=intervalo)
     df.info()
 
     guardar_precios(df, simbolo=simbolo, intervalo=intervalo)
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--simbolo",
+        type=str,
+        default="SPY",
+        help="Símbolo a extraer (por defecto: SPY)",
+    )
+
+    args = parser.parse_args()
+    main(simbolo=args.simbolo)
