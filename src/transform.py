@@ -9,6 +9,9 @@ import numpy as np
 from src.config import carpeta_datos
 from pathlib import Path
 from typing import List
+from sklearn.preprocessing import PowerTransformer
+
+# Manejo de datos
 
 def cargar_precios(
         simbolo:str,
@@ -25,6 +28,20 @@ def cargar_precios(
     except Exception as e:
         print(f"Ocurrió un error al leer el archivo Parquet: {e}")
         return pd.DataFrame()
+
+
+def guardar_datos(
+        df:pd.DataFrame,
+        simbolo:str,
+        intervalo:str
+        ):
+    fichero = Path(carpeta_datos) / f'{simbolo}/datos_depurados_{simbolo}_{intervalo}.parquet'
+
+    # Asegurar que el directorio exista
+    fichero.parent.mkdir(parents=True, exist_ok=True)
+
+    df.to_parquet(fichero)
+    print(f'Fichero guardado correctamente en {Path(fichero)}')
 
 
 # Feature Engineering
@@ -135,27 +152,49 @@ def calcular_varianza(
     return pd.concat([df, pd.DataFrame(nueva_columna, index=df.index)], axis=1)
 
 
-# EDA
+# Transformaciones
 
-def mostrar_asimetrias(df:pd.DataFrame):
+def transformar_log(df: pd.DataFrame, cols: list, calculation_1p: bool = False) -> pd.DataFrame:
     """
-    Muestra la asimetría de las columnas numéricas del DataFrame.
+    Aplica la transformación logarítmica a las columnas especificadas del DataFrame.
+    Se crea una nueva columna con el sufijo '_log' o '_log1p' y se elimina la columna original.
     """
-    print(df.select_dtypes(include="number").skew().sort_values(ascending=False).to_string())
+    # Creamos una copia para no alterar el DataFrame original accidentalmente
+    df_out = df.copy()
+    
+    # Se define la función y el sufijo
+    if calculation_1p:
+        funcion_log = np.log1p
+        sufijo = '_log1p'
+    else:
+        funcion_log = np.log
+        sufijo = '_log'
+        
+    # Se aplica la función y elimina la columna original
+    for col in cols:
+        df_out[f'{col}{sufijo}'] = funcion_log(df_out[col])
+        df_out.drop(col, axis=1, inplace=True)
+        
+    return df_out
 
 
-def guardar_datos(
-        df:pd.DataFrame,
-        simbolo:str,
-        intervalo:str
-        ):
-    fichero = Path(carpeta_datos) / f'{simbolo}/datos_depurados_{simbolo}_{intervalo}.parquet'
+def transformar_yeo(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    """
+    Aplica la transformación de Yeo-Johnson a las columnas especificadas del DataFrame.
+    Se crea una nueva columna con el sufijo '_yeo' y se elimina la columna original.
+    """
+    df_out = df.copy()
 
-    # Asegurar que el directorio exista
-    fichero.parent.mkdir(parents=True, exist_ok=True)
+    # Inicializar el PowerTransformer
+    pt = PowerTransformer(method='yeo-johnson', standardize=True)
 
-    df.to_parquet(fichero)
-    print(f'Fichero guardado correctamente en {Path(fichero)}')
+    # Se aplica la función y elimina la columna original
+    for col in cols:
+        df_out[f'{col}_yeo'] = pt.fit_transform(df_out[[col]])
+        df_out.drop(col, axis=1, inplace=True)
+        
+    return df_out
+
 
 
 '''
@@ -185,13 +224,13 @@ def main():
     )
 
     # Calcular medias moviles
-    periodos_ma = [5,10,20]
+    periodos_ma = [20,50]
 
     # Precios Close: lag = 1 para evitar Lookahead Bias
     df = df.pipe(
             lambda d: calcular_medias_moviles(
-                d, columna="Close_lag1", periodos=periodos_ma
-            )
+                d, columna="Close_lag1", periodos=periodos_ma, min_periodos=20
+            ) # min_periodos = 20: empieza a calcular la media larga antes, reduciendo missings iniciales
     )
 
     # Capturar columnas de medias moviles
@@ -231,7 +270,7 @@ def main():
                 d,
                 col_base=col_volumen_sma,
                 cols_target=[col_volumen],
-                lag_base=1,  # Base: SMA calculada hasta t-1
+                lag_base=1,  # Base: SMA calculada hasta t-2
             )
         )
 
@@ -249,17 +288,6 @@ def main():
             lag_base=0,
         )
     )
-
-
-    # Transformar Open a variacion porcentual respecto de Close del dia anterior
-    df = df.pipe(
-            lambda d: calcular_variaciones_pct(
-                d,
-                col_base='Close',
-                cols_target=['Open'],
-                lag_base=1,
-            )
-        )
 
     # Obtener rendimiento y varianza diaria con lag: Cierre en t-1 vs Cierre en t-2
     df = df.pipe(
@@ -282,6 +310,13 @@ def main():
             periodo=20,
         )
     )
+
+    # Transformar variables asimetricas
+    columnas_log = ['Daily_return_lag1_var20']
+    columnas_yeo = ['Close_lag1_max20_pct_diff_Open', 'High_lag1_pct_diff_Open']
+    df = transformar_log(df, cols=columnas_log)
+    df = transformar_yeo(df, cols=columnas_yeo)
+
 
     # Eliminar columnas no aplicables al modelado
     df = df.drop(columns=cols_absolutas)
