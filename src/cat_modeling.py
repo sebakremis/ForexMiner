@@ -256,7 +256,7 @@ def registrar_evaluacion_excel(
     en un libro de Excel estructurado.
     """
     path = Path(carpeta_datos) / f"evaluacion_modelos/{filepath}"
-    run_id = f"{simbolo}_{nombre_modelo}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_id = f"{simbolo}_{intervalo}_{nombre_modelo}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     # Asegurar que el directorio exista
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -368,6 +368,7 @@ def registrar_evaluacion_excel(
 
     print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
+
 '''
 Bloque principal
 
@@ -376,6 +377,9 @@ python -m src.cat_modeling
 
 Para modelar un ticker diferente (Ej: NVDA):
 python -m src.cat_modeling --simbolo NVDA
+
+Para intervalo distinto a '1d' (Ej: 1wk):
+python -m src.cat_modeling --intervalo 1wk
 
 Para evaluar las metricas del modelo agregar: --evaluar
 '''

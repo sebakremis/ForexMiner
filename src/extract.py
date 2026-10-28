@@ -49,6 +49,12 @@ Bloque principal
 
 Ejecucion desde el terminal:
 python -m src.extract
+
+Para extraer un ticker diferente a SPY (Ej: NVDA):
+python -m src.extract --simbolo NVDA
+
+Para intervalo distinto a '1d' (Ej: 1wk):
+python -m src.extract --intervalo 1wk
 '''
 def main(
         simbolo:str = 'SPY',
@@ -67,6 +73,12 @@ if __name__ == '__main__':
         default="SPY",
         help="Símbolo a extraer (por defecto: SPY)",
     )
+    parser.add_argument(
+        "--intervalo",
+        type=str,
+        default=intervalo_defecto,
+        help="Intervalo (por defecto '1d')",
+    )    
 
     args = parser.parse_args()
-    main(simbolo=args.simbolo)
+    main(simbolo=args.simbolo, intervalo=args.intervalo)
