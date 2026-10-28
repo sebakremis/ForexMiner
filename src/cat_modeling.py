@@ -4,10 +4,13 @@ src/cat_modeling.py
 Entrenamiento de modelo de Clasificacion
 '''
 import pandas as pd
+import numpy as np
 from src.config import carpeta_datos, intervalo_defecto
 from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import StratifiedKFold, cross_validate
 
 from src.transform import categorizar_en_cuantiles
 import argparse
@@ -67,15 +70,190 @@ def split_ultimo(
     
     return X_train, X_test, y_train, y_test
 
+
+def evaluar_modelo_cat(
+    model,
+    X,
+    y,
+    cv_splits=5,
+    random_state=42,
+    run_permutation_importance=False,
+    class_names=None,
+):
+    """Evalúa exhaustivamente un RandomForest multiclase mediante validación cruzada estratificada,
+
+    desglose de métricas por clase, matrices de confusión y análisis de
+    importancia de variables.
+
+    Parámetros:
+    -----------
+    model : estimator
+        Modelo RandomForestClassifier ya instanciado o preentrenado.
+    X : pd.DataFrame o np.ndarray
+        Matriz de características (features).
+    y : pd.Series o np.ndarray
+        Etiquetas de clase categóricas o multiclase.
+    cv_splits : int, default=5
+        Número de folds para la validación cruzada estratificada.
+    random_state : int, default=42
+        Semilla para reproducibilidad del particionado.
+    run_permutation_importance : bool, default=True
+        Calcula importancia por permutación sobre el conjunto completo.
+    class_names : list, optional
+        Nombres o etiquetas de las clases para reportes legibles.
+
+    Retorna:
+    --------
+    dict
+        Diccionario con métricas agregadas de CV, reporte por clase,
+        matriz de confusión y DataFrames de importancia de variables.
+    """
+    feature_names = (
+        X.columns.tolist()
+        if hasattr(X, "columns")
+        else [f"feature_{i}" for i in range(X.shape[1])]
+    )
+    if class_names is None:
+        class_names = (
+            [str(cls) for cls in np.unique(y)]
+            if hasattr(model, "classes_") is False
+            else [str(cls) for cls in model.classes_]
+        )
+
+    # 1. Validación Cruzada Estratificada Multimétrica
+    skf = StratifiedKFold(
+        n_splits=cv_splits, shuffle=True, random_state=random_state
+    )
+
+    scoring = {
+        "accuracy": "accuracy",
+        "balanced_accuracy": "balanced_accuracy",
+        "f1_macro": "f1_macro",
+        "f1_weighted": "f1_weighted",
+        "log_loss": "neg_log_loss",
+    }
+
+    cv_results = cross_validate(
+        estimator=model,
+        X=X,
+        y=y,
+        cv=skf,
+        scoring=scoring,
+        return_train_score=True,
+        n_jobs=-1,
+    )
+
+    # Resumen de métricas de CV (media ± desviación estándar)
+    cv_summary = {
+        "CV Accuracy": f"{cv_results['test_accuracy'].mean():.4f} (± {cv_results['test_accuracy'].std():.4f})",
+        "CV Balanced Accuracy": f"{cv_results['test_balanced_accuracy'].mean():.4f} (± {cv_results['test_balanced_accuracy'].std():.4f})",
+        "CV F1 (Macro)": f"{cv_results['test_f1_macro'].mean():.4f} (± {cv_results['test_f1_macro'].std():.4f})",
+        "CV F1 (Weighted)": f"{cv_results['test_f1_weighted'].mean():.4f} (± {cv_results['test_f1_weighted'].std():.4f})",
+        "CV Log Loss": f"{-cv_results['test_log_loss'].mean():.4f} (± {cv_results['test_log_loss'].std():.4f})",
+        "Train vs Test Accuracy Gap": f"{(cv_results['train_accuracy'].mean() - cv_results['test_accuracy'].mean()):.4f}",
+    }
+
+    # 2. Desempeño detallado y Matriz de Confusión
+    # Asegura ajuste sobre los datos pasados si el estimador requiere cómputos directos
+    #model.fit(X, y)
+    y_pred = model.predict(X)
+
+    # Reporte de clasificación estructurado por clase
+    cls_report_dict = classification_report(
+        y, y_pred, target_names=class_names, output_dict=True
+    )
+    df_cls_report = pd.DataFrame(cls_report_dict).transpose()
+
+    # Matriz de confusión normalizada (por filas / valores verdaderos)
+    cm_raw = confusion_matrix(y, y_pred)
+    cm_norm = confusion_matrix(y, y_pred, normalize="true")
+    df_cm = pd.DataFrame(
+        cm_norm,
+        index=[f"True: {c}" for c in class_names],
+        columns=[f"Pred: {c}" for c in class_names],
+    )
+
+    # 3. Importancia de Variables (Feature Importance)
+    # 3.1 MDI (Mean Decrease in Impurity) - nativo de RandomForest
+    mdi_importances = model.feature_importances_
+    df_importance = pd.DataFrame(
+        {"feature": feature_names, "importance_mdi": mdi_importances}
+    ).sort_values(by="importance_mdi", ascending=False)
+
+    # 3.2 Permutation Feature Importance (más robusto frente a cardinalidad alta)
+    df_perm_importance = None
+    if run_permutation_importance:
+        perm_result = permutation_importance(
+            model,
+            X,
+            y,
+            scoring="f1_macro",
+            n_repeats=10,
+            random_state=random_state,
+            n_jobs=-1,
+        )
+        df_perm_importance = pd.DataFrame(
+            {
+                "feature": feature_names,
+                "perm_importance_mean": perm_result.importances_mean,
+                "perm_importance_std": perm_result.importances_std,
+            }
+        ).sort_values(by="perm_importance_mean", ascending=False)
+
+    # 4. Salida en consola estructurada
+    print("=" * 60)
+    print("RESUMEN DE VALIDACIÓN CRUZADA ESTRATIFICADA")
+    print("=" * 60)
+    for metric, val in cv_summary.items():
+        print(f"{metric:<30}: {val}")
+
+    print("\n" + "=" * 60)
+    print("REPORTE DE CLASIFICACIÓN DETALLADO (POR CLASE)")
+    print("=" * 60)
+    print(df_cls_report.round(4))
+
+    print("\n" + "=" * 60)
+    print("MATRIZ DE CONFUSIÓN (NORMALIZADA POR SOPORTE REAL)")
+    print("=" * 60)
+    print(df_cm.round(4))
+
+    print("\n" + "=" * 60)
+    print("RANKING DE VARIABLES - IMPORTANCIA POR IMPUREZA (MDI)")
+    print("=" * 60)
+    print(df_importance.head(20).to_string(index=False))
+
+    if df_perm_importance is not None:
+        print("\n" + "=" * 60)
+        print("RANKING DE VARIABLES - IMPORTANCIA POR PERMUTACIÓN (F1-Macro)")
+        print("=" * 60)
+        print(df_perm_importance.head(20).to_string(index=False))
+
+    return {
+        "cv_summary": cv_summary,
+        "cv_raw_results": cv_results,
+        "classification_report": df_cls_report,
+        "confusion_matrix_raw": cm_raw,
+        "confusion_matrix_normalized": df_cm,
+        "feature_importance_mdi": df_importance,
+        "feature_importance_permutation": df_perm_importance,
+    }
+
+
 '''
 Bloque principal
 
 Ejecucion desde el terminal:
 python -m src.cat_modeling
+
+Para modelar un ticker diferente (Ej: NVDA):
+python -m src.cat_modeling --simbolo NVDA
+
+Para evaluar las metricas del modelo agregar: --evaluar
 '''
 def main(
         simbolo:str="SPY",
-        intervalo:str=intervalo_defecto
+        intervalo:str=intervalo_defecto,
+        evaluar:bool=False
 ):
     # Cargar fichero de precios
     df, cols_absolutas = cargar_datos(simbolo=simbolo, intervalo=intervalo, leer_cols_exclude=True)
@@ -95,7 +273,7 @@ def main(
         quitar_original=False
         )
 
-    print("\n--- Rangos por Categoría ---")
+    print(f"\n--- Rangos por Categoría para el ticker {simbolo} ---")
     print(tabla_bins)
 
     
@@ -123,14 +301,10 @@ def main(
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
     print(f"Ultimo Open: {ultimo_open}")
 
-    # Validacion cruzada
-    tscv = TimeSeriesSplit(n_splits=5)
-    cv_scores = cross_val_score(
-        estimator=model, X=X_train, y=y_train, cv=tscv, scoring="accuracy"
-    )
+    # Evaluar modelo
+    if evaluar:
+        dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
 
-    # Mostrar resultados
-    print(f"Accuracy promedio Time Series CV: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
 
 
 
@@ -142,6 +316,12 @@ if __name__ == '__main__':
         default="SPY",
         help="Símbolo a cargar (por defecto: SPY)",
     )
+    parser.add_argument(
+        "--evaluar",
+        action="store_true",
+        default=False,
+        help="Activar validación (por defecto: False)",
+    )
 
     args = parser.parse_args()
-    main(simbolo=args.simbolo)
+    main(simbolo=args.simbolo, evaluar=args.evaluar)
