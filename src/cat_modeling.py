@@ -8,6 +8,7 @@ import numpy as np
 import datetime as dt
 from pathlib import Path
 import argparse
+from typing import Sequence
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
@@ -16,6 +17,7 @@ from sklearn.model_selection import StratifiedKFold, cross_validate
 
 from src.transform import categorizar_en_cuantiles
 from src.config import carpeta_datos, intervalo_defecto
+from src.cli import get_base_parser
 
 
 def cargar_datos(
@@ -27,7 +29,7 @@ def cargar_datos(
     try:
         df = pd.read_parquet(fichero_precios)
         if leer_cols_exclude:
-            fichero_cols_exclude = Path(carpeta_datos) / f"{simbolo}/cols_exclude_{simbolo}_{intervalo}.csv"
+            fichero_cols_exclude = Path(carpeta_datos) / "cols_exclude.csv"
             try:                
                 df_cols_exclude = pd.read_csv(fichero_cols_exclude, header=None)
                 cols_exclude = df_cols_exclude[0].to_list()
@@ -448,26 +450,33 @@ def main(
         )
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--simbolo",
-        type=str,
-        default="SPY",
-        help="Símbolo a cargar (por defecto: SPY)",
-    )
-    parser.add_argument(
-        "--intervalo",
-        type=str,
-        default=intervalo_defecto,
-        help="Intervalo (por defecto '1d')",
-    )    
+def get_parser() -> argparse.ArgumentParser:
+    """Parser que hereda los argumentos base y añade los propios de modelado."""
+    # Se hereda con parents=[get_base_parser()]
+    # add_help=False permite que este parser también pueda heredarse en main.py sin conflicto con -h
+    parser = argparse.ArgumentParser(parents=[get_base_parser()], add_help=False)
+
+    # Se añade solo el argumento propio de este módulo
     parser.add_argument(
         "--evaluar",
         action="store_true",
-        default=False,
-        help="Activar evaluación (por defecto: False)",
+        help="Ejecuta la evaluación del modelo tras el entrenamiento",
+    )
+    return parser
+
+
+def entrypoint_cat_modeling(argv: Sequence[str] | None = None):
+    # Se crea un parser con ayuda (-h) habilitada usando get_parser() como padre
+    parser = argparse.ArgumentParser(
+        parents=[get_parser()],
+        description="Módulo de Modelado Categórico",
     )
 
-    args = parser.parse_args()
-    main(simbolo=args.simbolo, intervalo=args.intervalo, evaluar=args.evaluar)
+    args = parser.parse_args(argv)
+    
+    # Ejecutar la lógica central con los argumentos parseados
+    return main(simbolo=args.simbolo, intervalo=args.intervalo, evaluar=args.evaluar)
+
+
+if __name__ == '__main__':
+    entrypoint_cat_modeling()

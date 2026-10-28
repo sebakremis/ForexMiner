@@ -6,11 +6,14 @@ Modulo de la fase de transformacion
 '''
 import pandas as pd
 import numpy as np
-from src.config import carpeta_datos, intervalo_defecto
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Sequence
+
 from sklearn.preprocessing import PowerTransformer
-import argparse
+
+from src.config import carpeta_datos, intervalo_defecto
+from src.cli import get_base_parser
+
 
 # Manejo de datos
 
@@ -47,7 +50,7 @@ def guardar_datos(
 
     if cols_exclude:
         df_cols_exclude = pd.DataFrame(cols_exclude, columns=['Columna'])
-        fichero_exclude = Path(carpeta_datos) / f"{simbolo}/cols_exclude_{simbolo}_{intervalo}.csv"
+        fichero_exclude = Path(carpeta_datos) / "cols_exclude.csv"
         df_cols_exclude.to_csv(fichero_exclude, index=False, encoding="utf-8", header=False)
 
 
@@ -282,8 +285,8 @@ Para intervalo distinto a '1d' (Ej: 1wk):
 python -m src.transform --intervalo 1wk
 '''
 def main(
-        simbolo:str='SPY',
-        intervalo:str=intervalo_defecto
+        simbolo:str,
+        intervalo:str
 ):
     # Cargar fichero de precios    
     df = cargar_precios(simbolo=simbolo, intervalo=intervalo)
@@ -417,20 +420,15 @@ def main(
         )
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--simbolo",
-        type=str,
-        default="SPY",
-        help="Símbolo a cargar (por defecto: SPY)",
-    )
-    parser.add_argument(
-        "--intervalo",
-        type=str,
-        default=intervalo_defecto,
-        help="Intervalo (por defecto '1d')",
-    )
+def entrypoint_transform(argv: Sequence[str] | None = None):
+    """Punto de entrada de línea de comandos."""
+    parser = get_base_parser()
 
-    args = parser.parse_args()
-    main(simbolo=args.simbolo, intervalo=args.intervalo)
+    # parse_known_args retorna (args_conocidos, lista_de_no_reconocidos)
+    args, _ = parser.parse_known_args(argv)
+    
+    # Ejecuta la lógica central con los argumentos parseados
+    return main(simbolo=args.simbolo, intervalo=args.intervalo)
+
+if __name__ == "__main__":
+    entrypoint_transform()

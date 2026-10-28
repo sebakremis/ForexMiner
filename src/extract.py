@@ -5,10 +5,11 @@ Modulo para la fase de extraccion
 '''
 import yfinance as yf
 import pandas as pd
-from src.config import carpeta_datos, fecha_inicio_defecto, intervalo_defecto
 from pathlib import Path
-from typing import Optional
-import argparse
+from typing import Optional, Sequence
+
+from src.config import carpeta_datos, fecha_inicio_defecto, intervalo_defecto
+from src.cli import get_base_parser
 
 def extraer_precios(
         simbolo:str='SPY',
@@ -57,28 +58,24 @@ Para intervalo distinto a '1d' (Ej: 1wk):
 python -m src.extract --intervalo 1wk
 '''
 def main(
-        simbolo:str = 'SPY',
-        intervalo:str = intervalo_defecto
+        simbolo:str,
+        intervalo:str
 ):
     df = extraer_precios(simbolo=simbolo, intervalo=intervalo)
     df.info()
 
     guardar_precios(df, simbolo=simbolo, intervalo=intervalo)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--simbolo",
-        type=str,
-        default="SPY",
-        help="Símbolo a extraer (por defecto: SPY)",
-    )
-    parser.add_argument(
-        "--intervalo",
-        type=str,
-        default=intervalo_defecto,
-        help="Intervalo (por defecto '1d')",
-    )    
 
-    args = parser.parse_args()
-    main(simbolo=args.simbolo, intervalo=args.intervalo)
+def entrypoint_extract(argv: Sequence[str] | None = None):
+    """Punto de entrada de línea de comandos."""
+    parser = get_base_parser()
+
+    # parse_known_args retorna (args_conocidos, lista_de_no_reconocidos)
+    args, _ = parser.parse_known_args(argv)
+    
+    # Ejecuta la lógica central con los argumentos parseados
+    return main(simbolo=args.simbolo, intervalo=args.intervalo)
+
+if __name__ == "__main__":
+    entrypoint_extract()
