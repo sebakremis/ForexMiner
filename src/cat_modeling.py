@@ -411,8 +411,16 @@ def main(
     print(f"\n--- Rangos por Categoría para el ticker {simbolo} ---")
     print(tabla_bins)
 
+    # Crear variable binaria: 1 si pertenece a la clase superior
+    target_col_bin = 'target_bin'
+    df_clean[target_col_bin] = (df_clean[objetivo_cat] ==3).astype(int)
+
     
-    X_train, X_live, y_train, _ = split_ultimo(df=df_clean, label=objetivo_cat, cols_excluded=posibles_labels+[objetivo_cat])
+    X_train, X_live, y_train, _ = split_ultimo(
+        df=df_clean, 
+        label=target_col_bin, 
+        cols_excluded=posibles_labels+[objetivo_cat, target_col_bin]
+        )
 
     # Inicializar y entrenar
     model = RandomForestClassifier(

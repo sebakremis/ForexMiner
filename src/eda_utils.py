@@ -169,3 +169,43 @@ def pintar_matriz_correlacion(
     )
 
     return corr_matrix, top_pairs_df
+
+def pintar_violin_plots(
+        df:pd.DataFrame,
+        numeric_cols:list[str],
+        target_col:str
+):
+    '''
+    Grafica grilla de violines respecto a la variable target categorica.
+    '''
+    # Configurar la figura:
+    fig, axes = plt.subplots(
+        nrows=len(numeric_cols),
+        ncols=1,
+        figsize=(8, 3.2 * len(numeric_cols)),
+        sharex=True,
+    )
+
+    # Iterar y graficar cada variable numérica
+    for ax, num_var in zip(axes, numeric_cols):
+        sns.violinplot(
+            data=df,
+            x=target_col,
+            y=num_var,
+            ax=ax,
+            palette="muted",
+            inner="quartile",  # Muestra mediana y cuartiles dentro del violín
+            cut=0,  # Limita el violín al rango real de los datos
+            legend=False,
+            hue=target_col
+        )
+        if ax == axes[0]:
+            ax.set_title(f"Distribución de features por categoria de {target_col}", fontsize=15, loc="center")
+        ax.set_ylabel(num_var, fontsize=10)
+        ax.grid(axis="y", linestyle="--", alpha=0.6)
+
+        # Etiqueta del eje X
+        ax.set_xlabel(target_col, fontsize=11, fontweight="bold")
+
+    plt.tight_layout()
+    plt.show()
