@@ -5,15 +5,18 @@ Entrenamiento de modelo de Clasificacion
 '''
 import pandas as pd
 import numpy as np
-from src.config import carpeta_datos, intervalo_defecto
+import datetime as dt
 from pathlib import Path
+import argparse
+
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import StratifiedKFold, cross_validate
 
 from src.transform import categorizar_en_cuantiles
-import argparse
+from src.config import carpeta_datos, intervalo_defecto
+
 
 def cargar_datos(
         simbolo:str,
@@ -238,6 +241,132 @@ def evaluar_modelo_cat(
         "feature_importance_permutation": df_perm_importance,
     }
 
+def registrar_evaluacion_excel(
+    dict_evaluacion,
+    nombre_modelo,
+    simbolo,
+    intervalo,
+    ultima_fecha,
+    ultimo_open,
+    y_pred,
+    filepath="historico_modelos_cat.xlsx",
+):
+    """Guarda o anexa los resultados de evaluar_modelo_cat y sus metadatos
+
+    en un libro de Excel estructurado.
+    """
+    path = Path(carpeta_datos) / f"evaluacion_modelos/{filepath}"
+    run_id = f"{simbolo}_{nombre_modelo}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # Asegurar que el directorio exista
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1. Aplanar métricas de validación cruzada y metadatos (Fila única)
+    cv_summary = dict_evaluacion.get("cv_summary", {})
+    fila_resumen = {
+        "run_id": run_id,
+        "timestamp_registro": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "simbolo": simbolo,
+        "intervalo": intervalo,
+        "nombre_modelo": nombre_modelo,
+        "ultima_fecha": str(ultima_fecha),
+        "ultimo_open": float(ultimo_open),
+        "y_pred": str(y_pred),
+        # Métricas escalares agregadas
+        "cv_accuracy": cv_summary.get("CV Accuracy", np.nan),
+        "cv_balanced_acc": cv_summary.get("CV Balanced Accuracy", np.nan),
+        "cv_f1_macro": cv_summary.get("CV F1 (Macro)", np.nan),
+        "cv_f1_weighted": cv_summary.get("CV F1 (Weighted)", np.nan),
+        "cv_log_loss": cv_summary.get("CV Log Loss", np.nan),
+        "train_test_gap": cv_summary.get("Train vs Test Accuracy Gap", np.nan),
+    }
+    df_nueva_fila = pd.DataFrame([fila_resumen])
+
+    # 2. Preparar el DataFrame de Importancia de Features para anexar
+    df_feat = dict_evaluacion.get("feature_importance_mdi")
+    if df_feat is not None:
+        df_feat = df_feat.copy()
+        df_feat.insert(0, "run_id", run_id)
+        df_feat.insert(1, "simbolo", simbolo)
+        df_feat.insert(2, "nombre_modelo", nombre_modelo)
+
+    # 3. Preparar el Classification Report para anexar
+    df_report = dict_evaluacion.get("classification_report")
+    if df_report is not None:
+        df_report = df_report.copy().reset_index()
+        df_report.rename(columns={"index": "clase_o_metrica"}, inplace=True)
+        df_report.insert(0, "run_id", run_id)
+        df_report.insert(1, "simbolo", simbolo)
+
+    # 4. Escritura / Concatenación en Excel
+    if not path.exists():
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            df_nueva_fila.to_excel(
+                writer, sheet_name="Registro_Modelos", index=False
+            )
+            if df_feat is not None:
+                df_feat.to_excel(
+                    writer, sheet_name="Log_Features", index=False
+                )
+            if df_report is not None:
+                df_report.to_excel(
+                    writer, sheet_name="Log_Clases", index=False
+                )
+    else:
+        # Modo append conservando las hojas existentes
+        with pd.ExcelWriter(
+            path, engine="openpyxl", mode="a", if_sheet_exists="overlay"
+        ) as writer:
+            # Anexar a Hoja Principal
+            try:
+                hoja_existente = writer.sheets["Registro_Modelos"]
+                start_row = hoja_existente.max_row
+                df_nueva_fila.to_excel(
+                    writer,
+                    sheet_name="Registro_Modelos",
+                    index=False,
+                    header=False,
+                    startrow=start_row,
+                )
+            except KeyError:
+                df_nueva_fila.to_excel(
+                    writer, sheet_name="Registro_Modelos", index=False
+                )
+
+            # Anexar a Log_Features
+            if df_feat is not None:
+                try:
+                    hoja_feat = writer.sheets["Log_Features"]
+                    start_row_feat = hoja_feat.max_row
+                    df_feat.to_excel(
+                        writer,
+                        sheet_name="Log_Features",
+                        index=False,
+                        header=False,
+                        startrow=start_row_feat,
+                    )
+                except KeyError:
+                    df_feat.to_excel(
+                        writer, sheet_name="Log_Features", index=False
+                    )
+
+            # Anexar a Log_Clases
+            if df_report is not None:
+                try:
+                    hoja_report = writer.sheets["Log_Clases"]
+                    start_row_rep = hoja_report.max_row
+                    df_report.to_excel(
+                        writer,
+                        sheet_name="Log_Clases",
+                        index=False,
+                        header=False,
+                        startrow=start_row_rep,
+                    )
+                except KeyError:
+                    df_report.to_excel(
+                        writer, sheet_name="Log_Clases", index=False
+                    )
+
+    print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
 '''
 Bloque principal
@@ -304,8 +433,15 @@ def main(
     # Evaluar modelo
     if evaluar:
         dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
-
-
+        registrar_evaluacion_excel(
+            dict_evaluacion=dict_evaluacion,
+            nombre_modelo=nombre_modelo,
+            simbolo=simbolo,
+            intervalo=intervalo,
+            ultima_fecha=ultima_fecha,
+            ultimo_open=ultimo_open,
+            y_pred=y_pred
+        )
 
 
 if __name__ == '__main__':
@@ -317,11 +453,17 @@ if __name__ == '__main__':
         help="Símbolo a cargar (por defecto: SPY)",
     )
     parser.add_argument(
+        "--intervalo",
+        type=str,
+        default=intervalo_defecto,
+        help="Intervalo (por defecto '1d')",
+    )    
+    parser.add_argument(
         "--evaluar",
         action="store_true",
         default=False,
-        help="Activar validación (por defecto: False)",
+        help="Activar evaluación (por defecto: False)",
     )
 
     args = parser.parse_args()
-    main(simbolo=args.simbolo, evaluar=args.evaluar)
+    main(simbolo=args.simbolo, intervalo=args.intervalo, evaluar=args.evaluar)
