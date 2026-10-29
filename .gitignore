@@ -21,3 +21,6 @@ tmp/
 
 # Carpeta de datos
 data/
+
+# Gestion de clave API
+/src/data_sources.py 
