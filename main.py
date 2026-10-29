@@ -9,6 +9,18 @@ from src.extract import main as extraer
 from src.transform import main as transformar
 from src.cat_modeling import main as modelar, get_parser as parser_modelado
 
+tickers_watchlist = [
+    'EWZ',
+    'GOOG',
+    'MELI',
+    'MSFT',
+    'MU',
+    'NVDA',
+    'ORCL',
+    'SPY',
+    'VIST'
+]
+
 def parse_cli():
     # Se reutiliza el parser de modelado que cubre todos los flags
     parser = argparse.ArgumentParser(

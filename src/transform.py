@@ -317,14 +317,14 @@ def main(
             )
     )
 
-    # Volumen: tasa de cambio porcentual respecto a su promedio
-    periodo = 20
+    # Volumen promedio
+    periodo_volumen = 20
     col_volumen = "Volume_lag1"
-    col_volumen_sma = f"{col_volumen}_sma{periodo}"
+    col_volumen_sma = f"{col_volumen}_sma{periodo_volumen}"
 
     df = df.pipe(
             lambda d: calcular_medias_moviles(
-                d, columna=col_volumen, periodos=[periodo]
+                d, columna=col_volumen, periodos=[periodo_volumen]
             )
         )
 
@@ -355,7 +355,18 @@ def main(
                 )
             )
 
-    # Volumen
+    # Spread: diferencia entre H y L con lag1
+    df = df.pipe(
+                lambda d: calcular_variaciones_pct(
+                    d,
+                    col_base= 'Low_lag1',
+                    cols_target=['High_lag1'],
+                    lag_base=0, 
+                )
+            )
+
+
+    # Volumen: tasa de cambio porcentual respecto a su promedio
     df = df.pipe(
             lambda d: calcular_variaciones_pct(
                 d,
@@ -368,7 +379,7 @@ def main(
 
     # Transformar columnas a diferencias porcentuales con respecto a Open del mismo dia
     columnas_diff_open = columnas_extremos + [
-        'High', 'Low', 'Close', 'High_lag1', 'Low_lag1', 'Close_lag1', col_sma_larga
+        'High', 'Low', 'Close', 'High_lag1', 'Close_lag1', col_sma_larga
         ] # High, Low y Close sin lag para posibles labels / con lag para predictores
 
     df = df.pipe(
@@ -390,20 +401,28 @@ def main(
                 )
             )
 
-    # Renombrar columna
-    columna_nueva = 'Daily_return_lag1'
-    df = df.rename(columns={'Close_lag1_pct_diff_Close' : columna_nueva})
-
     df = df.pipe(
         lambda d: calcular_varianza(
             d,
-            col=columna_nueva,
+            col='Close_lag1_pct_diff_Close',
             periodo=20,
         )
     )
 
+    # Renombrar columnas: Nombre viejo => Nombre nuevo
+    renombrar_columnas = {
+        'Close_lag1_pct_diff_Close' : 'Daily_return_lag1',
+        'Close_lag1_pct_diff_Close_var20' : 'Daily_return_lag1_var20',
+        'High_lag1_pct_diff_Low_lag1' : 'HL_spread_lag1',
+        f'{col_sma_corta}_pct_diff_{col_sma_larga}' : f'{col_sma_corta}_pct_diff_sma{periodos_ma[1]}',
+        f'Volume_lag1_pct_diff_Volume_lag1_sma{periodo_volumen}' : f'Volume_lag1_pct_diff_sma{periodo_volumen}'
+    } 
+    df = df.rename(columns=renombrar_columnas)
+
+
+
     # Transformar variables asimetricas
-    columnas_log = ['Daily_return_lag1_var20']
+    columnas_log = ['Daily_return_lag1_var20', 'HL_spread_lag1']
     columnas_yeo = ['Close_lag1_max20_pct_diff_Open', 'High_lag1_pct_diff_Open']
     df = transformar_log(df, cols=columnas_log)
     df = transformar_yeo(df, cols=columnas_yeo)
