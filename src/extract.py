@@ -11,72 +11,71 @@ from typing import Optional, Dict
 
 from src.config import (
     carpeta_datos, fecha_inicio_defecto, intervalo_defecto,
-    ACTIVOS, MACRO_SERIES
+    ACTIVOS, MACRO_SERIES, forex_cols
 )
 from src.data_sources import fred_api_key
 
 def extraer_yfinance(
-        activos:Optional[Dict[str, str]] = None,
-        intervalo:str=intervalo_defecto,
-        fecha_inicio: str = fecha_inicio_defecto,
-        fecha_fin: Optional[str] = None,
-)->pd.DataFrame:
+    activos: Optional[Dict[str, str]] = None,
+    intervalo: str = intervalo_defecto,
+    fecha_inicio: str = fecha_inicio_defecto,
+    fecha_fin: Optional[str] = None,
+) -> pd.DataFrame:
     if activos is None:
         activos = ACTIVOS
-    simbolos = list(activos.keys())
 
-    # Asegurar que no existan duplicados
-    tickers_unicos = list(set([str(t) for t in simbolos]))
+    # Conservar el orden original y eliminar duplicados manteniendo el mapeo
+    tickers_unicos = list(dict.fromkeys(activos.keys()))
 
     df_batch = yf.download(
         tickers=tickers_unicos,
         start=fecha_inicio,
         end=fecha_fin,
-        interval= intervalo,
-        auto_adjust= True, # precios ajustados
-        ignore_tz=True, # Evita discrepancias horarias entre distintos mercados       
+        interval=intervalo,
+        auto_adjust=True,  # precios ajustados
+        ignore_tz=True,  # Evita discrepancias horarias entre mercados
     )
+
     if df_batch.empty:
         print("No se pudo extraer ningún dato.")
         return pd.DataFrame()
 
-    # Restructurar datos
-    # Transformar de formato "ancho" a "largo"
-    # yfinance devuelve un MultiIndex en columnas cuando son varios tickers
-    if isinstance(df_batch.columns, pd.MultiIndex):
-        # Nombramos los niveles para no perdernos al apilar
-        df_batch.columns.names = ['Atributos', 'Ticker']
-        
-        # .stack() pasa los tickers de las columnas a las filas
-        # future_stack=True evita advertencias en versiones nuevas de pandas
-        df_prices = df_batch.stack(level='Ticker', future_stack=True).reset_index()
-    else:
-        # En caso de que la lista tenga solo 1 ticker
-        df_prices = df_batch.reset_index()
-        df_prices['Ticker'] = tickers_unicos[0]
+    # Normalizar el índice temporal (Date / Datetime)
+    df_batch.index = pd.to_datetime(df_batch.index).normalize()
+    df_batch.index.name = "Date"
 
-    # Homogeneizar el nombre de la columna de fecha
-    col_fecha = 'Date' if 'Date' in df_prices.columns else 'Datetime'
-    if col_fecha in df_prices.columns:
-        df_prices.rename(columns={col_fecha: 'Date'}, inplace=True)
-        df_prices['Date'] = pd.to_datetime(df_prices['Date']).dt.normalize()
-    
+    # yfinance retorna un MultiIndex en columnas cuando son múltiples tickers.
+    # Si se solicitó un único ticker, creamos el MultiIndex para estandarizar el procesamiento.
+    if not isinstance(df_batch.columns, pd.MultiIndex):
+        ticker_unico = tickers_unicos[0]
+        df_batch.columns = pd.MultiIndex.from_tuples(
+            [(col, ticker_unico) for col in df_batch.columns],
+            names=["Atributo", "Ticker"],
+        )
 
-    columnas_innecesarias = ['Dividends', 'Stock Splits', 'Capital Gains']
-    drop_cols = [col for col in columnas_innecesarias if col in df_prices.columns]
-    df_prices.drop(drop_cols, axis=1, inplace=True)
+    # Filtrar columnas no deseadas a nivel de atributo
+    columnas_innecesarias = {"Dividends", "Stock Splits", "Capital Gains", "Open"}
+    atributos_validos = [
+        col
+        for col in df_batch.columns.levels[0]
+        if col not in columnas_innecesarias
+    ]
+    df_batch = df_batch.loc[:, df_batch.columns.get_level_values(0).isin(atributos_validos)]
 
-    # Eliminar filas donde no hubo cotización real para el ticker
-    columnas_precio = [c for c in ['Close', 'Open', 'High', 'Low'] if c in df_prices.columns]
-    if columnas_precio:
-        df_prices.dropna(subset=columnas_precio, how='all', inplace=True)
+    # Aplanar columnas al formato: {NombreNuevo}_{Atributo} (ej: EURUSD_Close)
+    nuevas_columnas = []
+    for atributo, ticker in df_batch.columns:
+        nombre_amigable = activos.get(ticker, ticker)
+        nuevas_columnas.append(f"{nombre_amigable}_{atributo}")
 
-    # Si aún quedaran duplicados por solapamiento de fechas, conservar el registro con datos válidos
-    df_prices.drop_duplicates(subset=['Date', 'Ticker'], keep='first', inplace=True)
+    df_batch.columns = nuevas_columnas
+    df_batch.columns.name = None
 
-    df_prices = df_prices.sort_values(by=['Date', 'Ticker']).reset_index(drop=True)
-    df_prices.columns.name = None  # <--- Quita la etiqueta 'Atributos'  
-    return df_prices  
+    # Eliminar duplicados en el índice de fechas y ordenar cronológicamente
+    df_batch = df_batch[~df_batch.index.duplicated(keep="first")]
+    df_batch.sort_index(inplace=True)
+
+    return df_batch  
 
 
 def get_fred_client(api_key: Optional[str] = None) -> Fred:
@@ -168,11 +167,20 @@ python -m src.extract
 '''
 def main(
 ):
-    # Extraer y guardar en fichero precios de activos
-
+    # Extraer precios de activos
     df_activos = extraer_yfinance()
-    # Se reemplazan los simbolos de Tickers segun el diccionario
-    df_activos['Ticker'] = df_activos['Ticker'].map(ACTIVOS)   
+
+    # Se eliminan las columnas de volumen forex
+    cols_a_eliminar = [
+        col
+        for col in df_activos.columns
+        if any(col.startswith(f"{fx}_") for fx in forex_cols)
+        and col.endswith("_Volume")
+    ]
+
+    df_activos = df_activos.drop(columns=cols_a_eliminar)
+
+
     guardar_datos_raw(df=df_activos, nombre_fichero="precios")
     print(df_activos.info())
 

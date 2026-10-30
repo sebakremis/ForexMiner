@@ -12,21 +12,20 @@ from typing import List, Tuple, Optional, Sequence
 from sklearn.preprocessing import PowerTransformer
 
 from src.config import carpeta_datos, intervalo_defecto
-from src.cli import get_base_parser
+
 
 
 # Manejo de datos
 
-def cargar_precios(
-        simbolo:str,
-        intervalo:str=intervalo_defecto
+def cargar_datos_raw(
+        nombre_fichero:str
 )->pd.DataFrame:
-    fichero_precios = Path(carpeta_datos) / f'{simbolo}/precios_{simbolo}_{intervalo}.parquet'
+    fichero = Path(carpeta_datos) / f"raw_data/{nombre_fichero}.parquet"
     try:
-        df = pd.read_parquet(fichero_precios)
+        df = pd.read_parquet(fichero)
         return df
     except FileNotFoundError:
-        print(f"Error: El archivo '{fichero_precios}' no existe en la ruta especificada.")
+        print(f"Error: El archivo '{fichero}' no existe en la ruta especificada.")
         return pd.DataFrame()
     
     except Exception as e:
@@ -53,8 +52,102 @@ def guardar_datos(
         fichero_exclude = Path(carpeta_datos) / "cols_exclude.csv"
         df_cols_exclude.to_csv(fichero_exclude, index=False, encoding="utf-8", header=False)
 
+# Procesamiento
+
+def encontrar_columnas(
+        columnas_target:list[str],
+        cadena:str
+)->list:
+    columnas_encontradas = [col for col in columnas_target if cadena in col]
+    return columnas_encontradas
+
+def procesar_precios()->pd.DataFrame:
+    df_precios = cargar_datos_raw(nombre_fichero="precios")
+    columnas_originales = df_precios.columns.tolist()
+
+    # Calcular metricas: Precios Close
+    columnas_close = encontrar_columnas(
+        columnas_target=columnas_originales,
+        cadena="Close"
+    )
+    df_precios = calcular_metricas_close(df=df_precios, cols=columnas_close)
+
+    return df_precios
 
 # Feature Engineering
+
+def calcular_pct_diff(
+       serie_target:pd.Series,
+       serie_base:pd.Series,
+       lag_base:int=0 
+)->pd.Series:
+    base = serie_base.shift(lag_base)
+    pct_diff = (serie_target.sub(base, axis=0)
+                .div(base, axis=0)
+                .replace([np.inf, -np.inf], np.nan))
+
+    return pct_diff
+
+                                                                    
+def calcular_metricas_close(
+        df:pd.DataFrame,
+        cols:list[str],
+        periodo_corto:int=20,
+        periodo_largo:int=50,
+        min_periodos:int | None = None
+)->pd.DataFrame:
+    '''
+    Calcula metricas sobre los precios de cierre:
+    - Retornos
+    - Varianza de los retornos
+    - Extremos: minimo y maximo
+    - SMA: medias moviles
+    '''
+    df_out = df.copy()
+    for col in cols:
+        # Retornos y varianzas de los retornos
+        df_out[f"{col}_return"] = df_out[col].pct_change(fill_method=None)
+        df_out[f"{col}_var{periodo_corto}"] = df_out[f"{col}_return"].rolling(window=periodo_corto, min_periods=min_periodos).var()
+
+        # Maximos y minimos
+        df_out[f"{col}_max{periodo_corto}"] = (df_out[col]
+                                               .rolling(window=periodo_corto, min_periods=min_periodos)
+                                               .max()
+                                               )
+        df_out[f"{col}_min{periodo_corto}"] = (df_out[col]
+                                               .rolling(window=periodo_corto, min_periods=min_periodos)
+                                               .min()
+                                               )
+
+        # Se expresan en diferencias porcentuales relativas al precio Close
+        df_out[f"{col}_max{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_max{periodo_corto}"], df_out[col])
+        df_out[f"{col}_min{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_min{periodo_corto}"], df_out[col])
+               
+        # Medias moviles
+        df_out[f"{col}_sma{periodo_corto}"] = df_out[col].rolling(window=periodo_corto, min_periods=min_periodos).mean()
+        df_out[f"{col}_sma{periodo_largo}"] = df_out[col].rolling(window=periodo_largo, min_periods=min_periodos).mean()
+
+        # Diferencia porcentual entre medias
+        df_out[f"{col}_sma{periodo_corto}_pct_diff_sma{periodo_largo}"] = calcular_pct_diff(
+            df_out[f"{col}_sma{periodo_corto}"],
+            df_out[f"{col}_sma{periodo_largo}"])
+        
+        # Se expresan las medias moviles relativas al precio Close
+        df_out[f"{col}_sma{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_sma{periodo_corto}"],df_out[col])
+
+        df_out[f"{col}_sma{periodo_largo}"] = calcular_pct_diff(df_out[f"{col}_sma{periodo_largo}"],df_out[col])
+
+        # Se renombran las columnas relativas
+        mapeo_relativas = {
+            f"{col}_max{periodo_corto}" : f"{col}_max{periodo_corto}_pct_diff_Close",
+            f"{col}_min{periodo_corto}" : f"{col}_min{periodo_corto}_pct_diff_Close",
+            f"{col}_sma{periodo_corto}" : f"{col}_sma{periodo_corto}_pct_diff_Close",
+            f"{col}_sma{periodo_largo}" : f"{col}_sma{periodo_largo}_pct_diff_Close"
+        }
+        df_out.rename(columns=mapeo_relativas, inplace=True)        
+
+    return df_out
+
 
 def calcular_medias_moviles(
         df:pd.DataFrame,
@@ -116,35 +209,6 @@ def aplicar_lag(
     df_base = df.drop(columns=columnas) if quitar_original else df
 
     return pd.concat([df_base, bloque_lag], axis=1)
-
-
-def calcular_variaciones_pct(
-    df: pd.DataFrame,
-    col_base: str,
-    cols_target: List[str],
-    lag_base: int = 0,
-) -> pd.DataFrame:
-    '''
-    Calcula la diferencia porcentual de múltiples columnas target
-    respecto a una única columna base mediante broadcasting vectorial.
-    '''
-    # Desplazar la serie base
-    base = df[col_base].shift(lag_base)
-
-    # Operación matricial: targets - base / base
-    sub_df = df[cols_target]
-
-    pct_diffs = (
-        sub_df.sub(base, axis=0)
-        .div(base, axis=0)
-        .replace([np.inf, -np.inf], np.nan) # reemplaza inf/-inf generados por eventuales ceros en la base
-    )
-
-    # Renombrar columnas
-    pct_diffs.columns = [f"{col}_pct_diff_{col_base}" for col in cols_target]
-
-    # Concatenar nuevas columnas
-    return pd.concat([df, pct_diffs], axis=1)
 
 
 def calcular_varianza(
@@ -277,19 +341,11 @@ Bloque principal
 
 Ejecucion desde el terminal:
 python -m src.transform
-
-Para transformar un ticker diferente a SPY (Ej: NVDA):
-python -m src.transform --simbolo NVDA
-
-Para intervalo distinto a '1d' (Ej: 1wk):
-python -m src.transform --intervalo 1wk
 '''
 def main(
-        simbolo:str,
-        intervalo:str
 ):
     # Cargar fichero de precios    
-    df = cargar_precios(simbolo=simbolo, intervalo=intervalo)
+    df_precios = procesar_precios()
 
     # Feature Engineering
 
@@ -439,15 +495,5 @@ def main(
         )
 
 
-def entrypoint_transform(argv: Sequence[str] | None = None):
-    """Punto de entrada de línea de comandos."""
-    parser = get_base_parser()
-
-    # parse_known_args retorna (args_conocidos, lista_de_no_reconocidos)
-    args, _ = parser.parse_known_args(argv)
-    
-    # Ejecuta la lógica central con los argumentos parseados
-    return main(simbolo=args.simbolo, intervalo=args.intervalo)
-
 if __name__ == "__main__":
-    entrypoint_transform()
+    main()

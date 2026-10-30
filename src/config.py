@@ -24,28 +24,32 @@ FOREX_MAJORS: Dict[str, str] = {
     "AUDUSD=X": "AUDUSD"
 }
 OTROS_ACTIVOS: Dict[str, str] = {
-    "GC=F": "gold",
-    "CL=F": "oil",
-    "SPY": "spy"
+    "GC=F": "Gold",
+    "CL=F": "Oil",
+    "SPY": "SPY"
 }
 # Diccionario consolidado
 ACTIVOS: Dict[str, str] = {**FOREX_MAJORS, **OTROS_ACTIVOS}
 
+# Listas automaticas:
+forex_cols = list(FOREX_MAJORS.values())
+otros_activos_cols = list(OTROS_ACTIVOS.values())
+
 # Mapeo de series macro: Series ID de FRED -> Nombre descriptivo de columna
 # Factores financieros / mercado (diarios o semanales en origen)
 DAILY_MACRO_SERIES: Dict[str, str] = {
-    "DFII10": "real_yield_10y",                 # 10-Year Real Yield (Diaria)
-    "DTWEXBGS": "dxy_broad_goods",              # Trade Weighted USD (Diaria)
-    "VIXCLS": "vix_index",                      # CBOE Volatility Index (Diaria)
-    "STLFSI4": "st_louis_financial_stress",     # Financial Stress Index (Semanal -> cierre de mes)
+    "DFII10": "Real_yield_10y",                 # 10-Year Real Yield (Diaria)
+    "DTWEXBGS": "DXY_broad_goods",              # Trade Weighted USD (Diaria)
+    "VIXCLS": "VIX_index",                      # CBOE Volatility Index (Diaria)
+    "STLFSI4": "St_louis_financial_stress",     # Financial Stress Index (Semanal -> cierre de mes)
 }
 # Pilares del ciclo económico fundamental (mensuales nativos en FRED)
 MONTHLY_MACRO_SERIES: Dict[str, str] = {
-    "INDPRO": "industrial_production",          # Industrial Production (Mensual)
-    "UNRATE": "unemployment_rate",              # Unemployment Rate (Mensual)
-    "CPIAUCSL": "cpi_headline",                 # CPI Urban Consumers (Mensual)
-    "FEDFUNDS": "fed_funds_rate",               # Effective Federal Funds Rate (Mensual)
-    "M2SL": "m2_money_supply",                  # M2 Money Supply (Mensual)
+    "INDPRO": "Industrial_production",          # Industrial Production (Mensual)
+    "UNRATE": "Unemployment_rate",              # Unemployment Rate (Mensual)
+    "CPIAUCSL": "CPI_headline",                 # CPI Urban Consumers (Mensual)
+    "FEDFUNDS": "Fed_funds_rate",               # Effective Federal Funds Rate (Mensual)
+    "M2SL": "M2_money_supply",                  # M2 Money Supply (Mensual)
 }
 
 # Diccionario consolidado
