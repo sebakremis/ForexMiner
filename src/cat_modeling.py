@@ -230,11 +230,8 @@ def evaluar_modelo_cat(
 
 def registrar_evaluacion_excel(
     dict_evaluacion,
-    nombre_modelo,
     simbolo,
-    intervalo,
     ultima_fecha,
-    ultimo_open,
     y_pred,
     filepath="historico_modelos_cat.xlsx",
 ):
@@ -243,7 +240,7 @@ def registrar_evaluacion_excel(
     en un libro de Excel estructurado.
     """
     path = Path(carpeta_datos) / f"evaluacion_modelos/{filepath}"
-    run_id = f"{simbolo}_{intervalo}_{nombre_modelo}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_id = f"{simbolo}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     # Asegurar que el directorio exista
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -253,10 +250,8 @@ def registrar_evaluacion_excel(
         "run_id": run_id,
         "timestamp_registro": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "simbolo": simbolo,
-        "intervalo": intervalo,
-        "nombre_modelo": nombre_modelo,
+        "intervalo": intervalo_defecto,
         "ultima_fecha": str(ultima_fecha),
-        "ultimo_open": float(ultimo_open),
         "y_pred": str(y_pred),
         # Métricas escalares agregadas
         "cv_accuracy": cv_summary.get("CV Accuracy", np.nan),
@@ -274,7 +269,6 @@ def registrar_evaluacion_excel(
         df_feat = df_feat.copy()
         df_feat.insert(0, "run_id", run_id)
         df_feat.insert(1, "simbolo", simbolo)
-        df_feat.insert(2, "nombre_modelo", nombre_modelo)
 
     # 3. Preparar el Classification Report para anexar
     df_report = dict_evaluacion.get("classification_report")
@@ -365,12 +359,19 @@ python -m src.cat_modeling
 def main():
     # Cargar fichero de precios
     df_clean = cargar_datos_clean()
-    posibles_labels = ['High_pct_diff_Open', 'Low_pct_diff_Open', 'Close_pct_diff_Open']
+    posibles_labels = [
+    'AUDUSD_Close_return',
+    'EURUSD_Close_return',
+    'GBPUSD_Close_return',
+    'USDCAD_Close_return',
+    'USDCHF_Close_return',
+    'USDJPY_Close_return'
+    ]
 
     # Modelo
     simbolo = 'EURUSD'
-    nombre_modelo = 'High'
-    objetivo = f"{nombre_modelo}_pct_diff_Open"
+
+    objetivo = f"{simbolo}_Close_return"
     objetivo_cat = f"{objetivo}_cat"
 
     # Crear variable categorica
@@ -384,15 +385,11 @@ def main():
     print(f"\n--- Rangos por Categoría para el ticker {simbolo} ---")
     print(tabla_bins)
 
-    # Crear variable binaria: 1 si pertenece a la clase superior
-    target_col_bin = 'target_bin'
-    df_clean[target_col_bin] = (df_clean[objetivo_cat] ==3).astype(int)
-
-    
+    # Separar datos de entrenamiento y test
     X_train, X_live, y_train, _ = split_ultimo(
         df=df_clean, 
-        label=target_col_bin, 
-        cols_excluded=posibles_labels+[objetivo_cat, target_col_bin]
+        label=objetivo_cat, 
+        cols_excluded=posibles_labels+[objetivo_cat]
         )
 
     # Inicializar y entrenar
@@ -412,16 +409,16 @@ def main():
     y_pred = model.predict(X_live)
     ultima_fecha = X_live.index.max()
 
-    print(f"Entrenamiento modelo {nombre_modelo} finalizado.")
+    print(f"Entrenamiento modelo {simbolo} finalizado.")
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
 
     # Evaluar modelo
     evaluar = True
     if evaluar:
         dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
+
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
-            nombre_modelo=nombre_modelo,
             simbolo=simbolo,
             ultima_fecha=ultima_fecha,
             y_pred=y_pred

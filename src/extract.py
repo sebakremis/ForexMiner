@@ -11,7 +11,7 @@ from typing import Optional, Dict
 
 from src.config import (
     carpeta_datos, fecha_inicio_defecto, intervalo_defecto,
-    ACTIVOS, MACRO_SERIES, forex_cols
+    ACTIVOS, DAILY_MACRO_SERIES, forex_cols
 )
 from src.data_sources import fred_api_key
 
@@ -114,7 +114,7 @@ def extraer_fred(
         DataFrame con DatetimeIndex y cada serie en una columna, ordenado cronologicamente.
     """
     if series_map is None:
-        series_map = MACRO_SERIES
+        series_map = DAILY_MACRO_SERIES
 
     fred = client or get_fred_client()
     data_frames = []
@@ -180,14 +180,15 @@ def main(
 
     df_activos = df_activos.drop(columns=cols_a_eliminar)
 
-
     guardar_datos_raw(df=df_activos, nombre_fichero="precios")
     print(df_activos.info())
 
     # Extraer datos macro
-    df_macro = extraer_fred()
-    guardar_datos_raw(df=df_macro, nombre_fichero="datos_macro")
-    print(df_macro.info())
+    print("Datos macro diarios")
+    df_macro_daily = extraer_fred()
+    guardar_datos_raw(df=df_macro_daily, nombre_fichero="datos_macro_daily")
+    print(df_macro_daily.info())
+  
 
 
 if __name__ == "__main__":

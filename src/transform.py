@@ -11,7 +11,9 @@ from typing import List, Tuple, Optional, Sequence
 
 from sklearn.preprocessing import PowerTransformer
 
-from src.config import carpeta_datos, ACTIVOS, forex_cols
+from src.config import (carpeta_datos, ACTIVOS, forex_cols, 
+                        daily_macro_cols
+                        )
 
 
 
@@ -225,6 +227,36 @@ def procesar_precios()->pd.DataFrame:
 
     return df_precios
 
+
+def procesar_datos_macro()->pd.DataFrame:
+    # Cargar datos diarios
+    df_macro = cargar_datos_raw(nombre_fichero="datos_macro_daily")
+
+    # Calculo de variaciones
+    periodo = 20
+
+    # Variables absolutas: se calculan las variaciones porcentuales en el periodo establecido
+    macro_absolutas = ['DXY_broad_goods', 'VIX_index']
+
+    for col in macro_absolutas:
+        df_macro[f"{col}_pct_chg_{periodo}d"] = df_macro[col].pct_change(periods=periodo, fill_method=None)
+
+    # Se elimina solo la variable absoluta 'DXY_broad_goods', ya que el indice VIX puede usarse como predictor
+    df_macro.drop(columns='DXY_broad_goods', inplace=True)
+
+    # Variables macro porcentuales: como ya estan en porcentaje, se calcula el delta
+    macro_porcentuales = ['Real_yield_10y', 'St_louis_financial_stress']
+
+    for col in macro_porcentuales:
+        df_macro[f"{col}_pct_chg_{periodo}d"] = df_macro[col].diff(periods=periodo)
+
+
+    # Se aplica lag de 1 dia para evitar Lookahead bias por el horario de publicacion
+    df_macro = aplicar_lag(df=df_macro, columnas=df_macro.columns.tolist(), quitar_original=True)
+
+    return df_macro
+
+
 # Transformaciones
 
 def transformar_log(df: pd.DataFrame, cols: list, calculation_1p: bool = False) -> pd.DataFrame:
@@ -346,11 +378,26 @@ def main(
     # Cargar fichero de precios    
     df_precios = procesar_precios()
 
+    # Cargar datos macro
+    df_macro = procesar_datos_macro()
+
+    # Unir
+    # merge_asof busca hacia atrás (direction='backward')
+    # Si el lunes exacto no tiene dato macro, toma el del último día hábil anterior disponible (ej. viernes).
+
+    df_merged = pd.merge_asof(
+        df_precios.sort_index(),
+        df_macro.sort_index(),
+        left_index=True,
+        right_index=True,
+        direction="backward"
+    )
+
     # Eliminar missings iniciales
-    df_precios.dropna(inplace=True)
+    df_merged.dropna(inplace=True)
 
     # Transformaciones
-    columnas_features = df_precios.columns.tolist()
+    columnas_features = df_merged.columns.tolist()
     
     # Transformaciones log
     columnas_spread = encontrar_columnas(columnas_features, "High_Low_spread")
@@ -358,7 +405,7 @@ def main(
     
 
     columnas_log = columnas_spread + columnas_var
-    df_transform = transformar_log(df_precios, cols=columnas_log)
+    df_transform = transformar_log(df_merged, cols=columnas_log)
 
     # Transformar log1p
     columnas_max = encontrar_columnas(columnas_features, "Close_max20")
@@ -372,9 +419,14 @@ def main(
     columnas_volume_pct_diff = encontrar_columnas(columnas_features, "Volume_pct_diff_sma20")
 
     columnas_yeo = columnas_high_pct_diff + columnas_low_pct_diff + columnas_volume_pct_diff + [
-        "USDCAD_Close_return_lag1"
+        "USDCAD_Close_return_lag1",
+        "VIX_index_pct_chg_20d_lag1",
+        "St_louis_financial_stress_pct_chg_20d_lag1"
         ]
     df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
+
+    # Se eliminan posibles missings luego de transformar
+    df_transform.dropna(inplace=True)
 
     print(df_transform.info())
 
