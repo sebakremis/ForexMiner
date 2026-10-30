@@ -17,34 +17,19 @@ from sklearn.model_selection import StratifiedKFold, cross_validate
 
 from src.transform import categorizar_en_cuantiles
 from src.config import carpeta_datos, intervalo_defecto
-from src.cli import get_base_parser
 
 
-def cargar_datos(
-        simbolo:str,
-        intervalo:str='1d',
-        leer_cols_exclude:bool=False
-)->tuple[pd.DataFrame, list[str]]:
-    fichero_precios = Path(carpeta_datos) / f"{simbolo}/datos_depurados_{simbolo}_{intervalo}.parquet"
+def cargar_datos_clean()->pd.DataFrame:
+    fichero_clean = Path(carpeta_datos) / "clean_data/datos_depurados.parquet"
     try:
-        df = pd.read_parquet(fichero_precios)
-        if leer_cols_exclude:
-            fichero_cols_exclude = Path(carpeta_datos) / "cols_exclude.csv"
-            try:                
-                df_cols_exclude = pd.read_csv(fichero_cols_exclude, header=None)
-                cols_exclude = df_cols_exclude[0].to_list()
-                return df, cols_exclude
-            except Exception as e:
-                print(f"Ocurrio un error al leer el fichero de columnas: {e}")
-
-        return df, []
+        df = pd.read_parquet(fichero_clean)
+        return df
     except FileNotFoundError:
-        print(f"Error: El archivo '{fichero_precios}' no existe en la ruta especificada.")
-        return pd.DataFrame(), []
-    
+        print(f"Error: El archivo '{fichero_clean}' no existe en la ruta especificada.")
+        return pd.DataFrame()   
     except Exception as e:
         print(f"Ocurrió un error al leer el archivo Parquet: {e}")
-        return pd.DataFrame(), []
+        return pd.DataFrame()
 
 
 def split_ultimo(
@@ -376,26 +361,14 @@ Bloque principal
 
 Ejecucion desde el terminal:
 python -m src.cat_modeling
-
-Para modelar un ticker diferente (Ej: NVDA):
-python -m src.cat_modeling --simbolo NVDA
-
-Para intervalo distinto a '1d' (Ej: 1wk):
-python -m src.cat_modeling --intervalo 1wk
-
-Para evaluar las metricas del modelo agregar: --evaluar
 '''
-def main(
-        simbolo:str="SPY",
-        intervalo:str=intervalo_defecto,
-        evaluar:bool=False
-):
+def main():
     # Cargar fichero de precios
-    df, cols_absolutas = cargar_datos(simbolo=simbolo, intervalo=intervalo, leer_cols_exclude=True)
-    df_clean = df.drop(columns=cols_absolutas)
+    df_clean = cargar_datos_clean()
     posibles_labels = ['High_pct_diff_Open', 'Low_pct_diff_Open', 'Close_pct_diff_Open']
 
     # Modelo
+    simbolo = 'EURUSD'
     nombre_modelo = 'High'
     objetivo = f"{nombre_modelo}_pct_diff_Open"
     objetivo_cat = f"{objetivo}_cat"
@@ -438,53 +411,22 @@ def main(
     # Realizar predicciones
     y_pred = model.predict(X_live)
     ultima_fecha = X_live.index.max()
-    ultimo_open = df.loc[ultima_fecha, 'Open']
 
     print(f"Entrenamiento modelo {nombre_modelo} finalizado.")
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
-    print(f"Ultimo Open: {ultimo_open}")
 
     # Evaluar modelo
+    evaluar = True
     if evaluar:
         dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
             nombre_modelo=nombre_modelo,
             simbolo=simbolo,
-            intervalo=intervalo,
             ultima_fecha=ultima_fecha,
-            ultimo_open=ultimo_open,
             y_pred=y_pred
         )
 
 
-def get_parser() -> argparse.ArgumentParser:
-    """Parser que hereda los argumentos base y añade los propios de modelado."""
-    # Se hereda con parents=[get_base_parser()]
-    # add_help=False permite que este parser también pueda heredarse en main.py sin conflicto con -h
-    parser = argparse.ArgumentParser(parents=[get_base_parser()], add_help=False)
-
-    # Se añade solo el argumento propio de este módulo
-    parser.add_argument(
-        "--evaluar",
-        action="store_true",
-        help="Ejecuta la evaluación del modelo tras el entrenamiento",
-    )
-    return parser
-
-
-def entrypoint_cat_modeling(argv: Sequence[str] | None = None):
-    # Se crea un parser con ayuda (-h) habilitada usando get_parser() como padre
-    parser = argparse.ArgumentParser(
-        parents=[get_parser()],
-        description="Módulo de Modelado Categórico",
-    )
-
-    args = parser.parse_args(argv)
-    
-    # Ejecutar la lógica central con los argumentos parseados
-    return main(simbolo=args.simbolo, intervalo=args.intervalo, evaluar=args.evaluar)
-
-
 if __name__ == '__main__':
-    entrypoint_cat_modeling()
+    main()

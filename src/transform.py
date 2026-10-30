@@ -72,7 +72,7 @@ def calcular_metricas_close(
     - Retornos
     - Varianza de los retornos en el periodo corto
     - Maximo y minimo en el periodo corto
-    - Medias moviles y diferencia entre medias
+    - Diferencia entre medias moviles
 
     Se expresan Maximo, Minimo y medias moviles relativos al precio Close.
     '''
@@ -95,29 +95,23 @@ def calcular_metricas_close(
         # Se expresan en diferencias porcentuales relativas al precio Close
         df_out[f"{col}_max{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_max{periodo_corto}"], df_out[col])
         df_out[f"{col}_min{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_min{periodo_corto}"], df_out[col])
+
                
         # Medias moviles
-        df_out[f"{col}_sma{periodo_corto}"] = df_out[col].rolling(window=periodo_corto, min_periods=min_periodos).mean()
-        df_out[f"{col}_sma{periodo_largo}"] = df_out[col].rolling(window=periodo_largo, min_periods=min_periodos).mean()
+        sma_corta = df_out[col].rolling(window=periodo_corto, min_periods=min_periodos).mean()
+        sma_larga = df_out[col].rolling(window=periodo_largo, min_periods=min_periodos).mean()
 
         # Diferencia porcentual entre medias
         df_out[f"{col}_sma{periodo_corto}_pct_diff_sma{periodo_largo}"] = calcular_pct_diff(
-            df_out[f"{col}_sma{periodo_corto}"],
-            df_out[f"{col}_sma{periodo_largo}"])
-        
-        # Se expresan las medias moviles relativas al precio Close
-        df_out[f"{col}_sma{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_sma{periodo_corto}"],df_out[col])
+            sma_corta,
+            sma_larga)
 
-        df_out[f"{col}_sma{periodo_largo}"] = calcular_pct_diff(df_out[f"{col}_sma{periodo_largo}"],df_out[col])
-
-        # Se renombran las columnas relativas
-        mapeo_relativas = {
+        # Se renombran las columnas pct_diff_Close
+        mapeo_nombres = {
             f"{col}_max{periodo_corto}" : f"{col}_max{periodo_corto}_pct_diff_Close",
             f"{col}_min{periodo_corto}" : f"{col}_min{periodo_corto}_pct_diff_Close",
-            f"{col}_sma{periodo_corto}" : f"{col}_sma{periodo_corto}_pct_diff_Close",
-            f"{col}_sma{periodo_largo}" : f"{col}_sma{periodo_largo}_pct_diff_Close"
         }
-        df_out.rename(columns=mapeo_relativas, inplace=True)        
+        df_out.rename(columns=mapeo_nombres, inplace=True)        
 
     return df_out
 
@@ -355,10 +349,37 @@ def main(
     # Eliminar missings iniciales
     df_precios.dropna(inplace=True)
 
-    print(df_precios.info())
+    # Transformaciones
+    columnas_features = df_precios.columns.tolist()
+    
+    # Transformaciones log
+    columnas_spread = encontrar_columnas(columnas_features, "High_Low_spread")
+    columnas_var = encontrar_columnas(columnas_features, "Close_var20")
+    
+
+    columnas_log = columnas_spread + columnas_var
+    df_transform = transformar_log(df_precios, cols=columnas_log)
+
+    # Transformar log1p
+    columnas_max = encontrar_columnas(columnas_features, "Close_max20")
+
+    columnas_log1p = columnas_max
+    df_transform = transformar_log(df_transform, cols=columnas_log1p, calculation_1p=True)
+
+    # Transformaciones yeo-johnson
+    columnas_high_pct_diff = encontrar_columnas(columnas_features, "High_pct_diff_Close")
+    columnas_low_pct_diff = encontrar_columnas(columnas_features, "Low_pct_diff_Close")
+    columnas_volume_pct_diff = encontrar_columnas(columnas_features, "Volume_pct_diff_sma20")
+
+    columnas_yeo = columnas_high_pct_diff + columnas_low_pct_diff + columnas_volume_pct_diff + [
+        "USDCAD_Close_return_lag1"
+        ]
+    df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
+
+    print(df_transform.info())
 
     # Se guardan los datos depurados
-    guardar_datos_clean(df_precios)
+    guardar_datos_clean(df_transform)
 
 
 if __name__ == "__main__":

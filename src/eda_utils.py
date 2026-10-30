@@ -80,6 +80,18 @@ def pintar_columna(col):
         cat_chart(col).show()
 
 
+def top_correlaciones(df:pd.DataFrame, top_n:int=20):
+    corr = df.corr().abs()
+    # Eliminar duplicados y diagonal
+    upper_tri = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+    pairs = (
+        upper_tri.unstack()
+        .dropna()
+        .reset_index(name="correlation")
+        .rename(columns={"level_0": "Variable A", "level_1": "Variable B"})
+    )
+    return pairs.sort_values(by="correlation", ascending=False).head(top_n)
+
 def pintar_matriz_correlacion(
     df: pd.DataFrame,
     method: str = "spearman",
@@ -89,9 +101,8 @@ def pintar_matriz_correlacion(
     top_n_pairs: int = 10,
     title: Optional[str] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Calcula y grafica la matriz de correlación triangular para la fase EDA
-
-    de CiclosMacro, extrayendo además los pares más correlacionados.
+    """Calcula y grafica la matriz de correlación triangular para la fase EDA, 
+    extrayendo además los pares más correlacionados.
 
     Parámetros
     ----------
@@ -148,7 +159,7 @@ def pintar_matriz_correlacion(
     plot_title = (
         title
         if title
-        else f"CiclosMacro — Matriz de Correlación ({method.capitalize()})"
+        else f"Matriz de Correlación ({method.capitalize()})"
     )
     plt.title(plot_title, fontsize=14, weight="bold", pad=15)
     plt.xticks(rotation=45, ha="right", fontsize=9)
