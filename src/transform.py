@@ -7,7 +7,7 @@ Modulo de la fase de transformacion
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple, Optional, Sequence
+from typing import List
 
 from sklearn.preprocessing import PowerTransformer
 
@@ -154,6 +154,17 @@ def calcular_metricas_extremos(
     return df_out
 
 
+def calcular_metricas_open(
+        df:pd.DataFrame,
+        simbolos:list[str]
+)->pd.DataFrame:
+    df_out = df.copy()
+    for simbolo in simbolos:
+        df_out[f"{simbolo}_Open_pct_diff_last_Close"] = calcular_pct_diff(df_out[f"{simbolo}_Open"], df_out[f"{simbolo}_Close"], lag_base=1)
+
+    return df_out
+
+
 def aplicar_lag(
         df:pd.DataFrame,
         columnas:List[str],
@@ -203,6 +214,9 @@ def procesar_precios()->pd.DataFrame:
     simbolos = list(ACTIVOS.values())
     df_precios = calcular_metricas_extremos(df=df_precios, simbolos=simbolos)
 
+    # Metricas sobre precios open
+    df_precios = calcular_metricas_open(df=df_precios, simbolos=simbolos)   
+
     # Eliminar columnas originales (absolutas)
     df_precios.drop(columns=columnas_originales, inplace=True)
 
@@ -218,8 +232,12 @@ def procesar_precios()->pd.DataFrame:
 
     df_precios = aplicar_lag(df=df_precios, columnas=retornos_forex, quitar_original=False)
 
+    # Variables lag: se excluyen los retornos forex que ya se calcularon, y las columnas
+    # Open_pct_diff_last_Close que no llevan lag
+    columnas_diff_open = encontrar_columnas(columnas_relativas, f"Open_pct_diff_last_Close")
+    excluir = set(retornos_forex+columnas_diff_open)
+
     # Resto de las columnas: se aplica el lag y se eliminan las originales
-    excluir = set(retornos_forex)
     variables_restantes = [col for col in columnas_relativas if col not in excluir]
 
     df_precios = aplicar_lag(df=df_precios, columnas=variables_restantes, quitar_original=True)    
@@ -228,33 +246,68 @@ def procesar_precios()->pd.DataFrame:
     return df_precios
 
 
-def procesar_datos_macro()->pd.DataFrame:
+def procesar_datos_macro() -> pd.DataFrame:
     # Cargar datos diarios
     df_macro = cargar_datos_raw(nombre_fichero="datos_macro_daily")
 
-    # Calculo de variaciones
+    # Asegurar índice datetime ordenado y asegurar frecuencia de días hábiles
+    df_macro.index = pd.to_datetime(df_macro.index)
+    df_macro = df_macro.sort_index()
+
+    # Cálculo de variaciones (20 días hábiles de mercado)
     periodo = 20
 
-    # Variables absolutas: se calculan las variaciones porcentuales en el periodo establecido
-    macro_absolutas = ['DXY_broad_goods', 'VIX_index']
+    # Variables de nivel (variación porcentual)
+    df_macro["VIX_pct_chg_20d"] = df_macro["VIX_index"].pct_change(
+        periods=periodo, fill_method=None
+    )
+    df_macro["DXY_pct_chg_20d"] = df_macro["DXY_broad_goods"].pct_change(
+        periods=periodo, fill_method=None
+    )
 
-    for col in macro_absolutas:
-        df_macro[f"{col}_pct_chg_{periodo}d"] = df_macro[col].pct_change(periods=periodo, fill_method=None)
+    # Variables expresadas en tasas/spreads (variación absoluta delta)
+    df_macro["Real_yield_delta_20d"] = df_macro["Real_yield_10y"].diff(
+        periods=periodo
+    )
+    df_macro["STLFSI_delta_20d"] = df_macro["St_louis_financial_stress"].diff(
+        periods=periodo
+    )
 
-    # Se elimina solo la variable absoluta 'DXY_broad_goods', ya que el indice VIX puede usarse como predictor
-    df_macro.drop(columns='DXY_broad_goods', inplace=True)
+    # Se conserva VIX en nivel como predictor
+    df_features_daily = pd.DataFrame(index=df_macro.index)
+    df_features_daily["VIX_level"] = df_macro["VIX_index"]
+    df_features_daily["VIX_pct_chg_20d"] = df_macro["VIX_pct_chg_20d"]
+    df_features_daily["DXY_pct_chg_20d"] = df_macro["DXY_pct_chg_20d"]
+    df_features_daily["Real_yield_delta_20d"] = df_macro["Real_yield_delta_20d"]
+    df_features_daily["STLFSI_delta_20d"] = df_macro["STLFSI_delta_20d"]
 
-    # Variables macro porcentuales: como ya estan en porcentaje, se calcula el delta
-    macro_porcentuales = ['Real_yield_10y', 'St_louis_financial_stress']
+    # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
+    # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
+    cols_lag_1d = ["VIX_level", "VIX_pct_chg_20d", "Real_yield_delta_20d"]
+    df_features_daily[cols_lag_1d] = df_features_daily[cols_lag_1d].shift(1)
 
-    for col in macro_porcentuales:
-        df_macro[f"{col}_pct_chg_{periodo}d"] = df_macro[col].diff(periods=periodo)
+    # DXY Broad: 2 días hábiles de rezago
+    df_features_daily["DXY_pct_chg_20d"] = df_features_daily[
+        "DXY_pct_chg_20d"
+    ].shift(2)
 
+    # STLFSI4: Se calcula al viernes T, pero la Fed lo publica el JUEVES T+1.
+    # Entre el viernes y el jueves hábil transcurren 4 días hábiles (Lun, Mar, Mié, Jue).
+    df_features_daily["STLFSI_delta_20d"] = df_features_daily[
+        "STLFSI_delta_20d"
+    ].shift(4)
 
-    # Se aplica lag de 1 dia para evitar Lookahead bias por el horario de publicacion
-    df_macro = aplicar_lag(df=df_macro, columnas=df_macro.columns.tolist(), quitar_original=True)
+    # Resampleo semanal tomando la última información disponible al viernes
+    df_weekly = df_features_daily.resample("W-FRI").last()
 
-    return df_macro
+    # Alinear la etiqueta al lunes previo (estilo yfinance)
+    df_weekly.index = df_weekly.index - pd.Timedelta(days=4)
+    df_weekly.index.name = "Date"
+
+    # Lag de modelado (Predicción Contemporánea)
+    df_weekly_features = df_weekly.shift(1)
+
+    return df_weekly_features
 
 
 # Transformaciones
@@ -301,71 +354,6 @@ def transformar_yeo(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     return df_out
 
 
-def categorizar_en_cuantiles(
-    df: pd.DataFrame,
-    columna: str,
-    num_cuantiles: int = 5,
-    quitar_original: bool = True,
-) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
-    """Transforma una columna continua en cuantiles globales.
-
-    Parámetros:
-    - df: DataFrame con los datos.
-    - columna: Nombre de la columna continua a transformar.
-    - num_cuantiles: Cantidad de cuantiles solicitados.
-    - quitar_original: Si se elimina la columna original tras crear los cuantiles.
-
-    Retorna:
-    - (df_out, df_bins): Tupla con el nuevo DataFrame y un DataFrame con los
-      límites inferiores y superiores de cada cuantil generado. Si no fue posible
-      calcular los cuantiles, df_bins será None.
-    """
-    df_out = df.copy()
-    nueva_columna = f"{columna}_cat"
-
-    serie = df_out[columna]
-    valid_count = serie.count()
-    df_bins = None
-
-    # Verificación de datos suficientes y varianza
-    if valid_count < num_cuantiles or serie.nunique() < 2:
-        df_out[nueva_columna] = np.nan
-    else:
-        try:
-            # retbins=True devuelve la serie categórica y el array con los bordes
-            cuantiles, bins = pd.qcut(
-                serie,
-                q=num_cuantiles,
-                labels=False,
-                duplicates="drop",
-                retbins=True,
-            )
-
-            # Sumar 1 para etiquetar de 1 a N
-            df_out[nueva_columna] = cuantiles + 1
-
-            # Construir tabla de límites por categoría
-            # len(bins) - 1 corresponde al número real de cuantiles formados
-            num_categorias_creadas = len(bins) - 1
-            df_bins = pd.DataFrame(
-                {
-                    "categoria": range(1, num_categorias_creadas + 1),
-                    "lim_inferior": bins[:-1],
-                    "lim_superior": bins[1:],
-                }
-            )
-
-        except ValueError:
-            df_out[nueva_columna] = np.nan
-
-    # Convertir a tipo 'category'
-    df_out[nueva_columna] = df_out[nueva_columna].astype("category")
-
-    # Eliminar columna original si corresponde
-    if quitar_original:
-        df_out = df_out.drop(columns=[columna])
-
-    return df_out, df_bins
 
 '''
 Bloque principal
@@ -381,17 +369,8 @@ def main(
     # Cargar datos macro
     df_macro = procesar_datos_macro()
 
-    # Unir
-    # merge_asof busca hacia atrás (direction='backward')
-    # Si el lunes exacto no tiene dato macro, toma el del último día hábil anterior disponible (ej. viernes).
+    df_merged = df_precios.join(df_macro, how='inner')
 
-    df_merged = pd.merge_asof(
-        df_precios.sort_index(),
-        df_macro.sort_index(),
-        left_index=True,
-        right_index=True,
-        direction="backward"
-    )
 
     # Eliminar missings iniciales
     df_merged.dropna(inplace=True)
@@ -417,11 +396,12 @@ def main(
     columnas_high_pct_diff = encontrar_columnas(columnas_features, "High_pct_diff_Close")
     columnas_low_pct_diff = encontrar_columnas(columnas_features, "Low_pct_diff_Close")
     columnas_volume_pct_diff = encontrar_columnas(columnas_features, "Volume_pct_diff_sma20")
+    columnas_open_pct_diff = encontrar_columnas(columnas_features, f"Open_pct_diff_last_Close")
 
-    columnas_yeo = columnas_high_pct_diff + columnas_low_pct_diff + columnas_volume_pct_diff + [
+    columnas_yeo =  columnas_high_pct_diff  + columnas_low_pct_diff + columnas_volume_pct_diff + columnas_open_pct_diff +[
         "USDCAD_Close_return_lag1",
-        "VIX_index_pct_chg_20d_lag1",
-        "St_louis_financial_stress_pct_chg_20d_lag1"
+        "VIX_pct_chg_20d",
+        "STLFSI_delta_20d"
         ]
     df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
 

@@ -7,16 +7,15 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 from pathlib import Path
-import argparse
-from typing import Sequence
+from typing import Tuple, Optional
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.model_selection import TimeSeriesSplit, cross_validate
 
-from src.transform import categorizar_en_cuantiles
-from src.config import carpeta_datos, intervalo_defecto
+from src.transform import encontrar_columnas
+from src.config import carpeta_datos, intervalo_defecto, forex_cols
 
 
 def cargar_datos_clean()->pd.DataFrame:
@@ -30,6 +29,73 @@ def cargar_datos_clean()->pd.DataFrame:
     except Exception as e:
         print(f"Ocurrió un error al leer el archivo Parquet: {e}")
         return pd.DataFrame()
+
+
+def categorizar_en_cuantiles(
+    df: pd.DataFrame,
+    columna: str,
+    num_cuantiles: int = 5,
+    quitar_original: bool = True,
+) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+    """Transforma una columna continua en cuantiles globales.
+
+    Parámetros:
+    - df: DataFrame con los datos.
+    - columna: Nombre de la columna continua a transformar.
+    - num_cuantiles: Cantidad de cuantiles solicitados.
+    - quitar_original: Si se elimina la columna original tras crear los cuantiles.
+
+    Retorna:
+    - (df_out, df_bins): Tupla con el nuevo DataFrame y un DataFrame con los
+      límites inferiores y superiores de cada cuantil generado. Si no fue posible
+      calcular los cuantiles, df_bins será None.
+    """
+    df_out = df.copy()
+    nueva_columna = f"{columna}_cat"
+
+    serie = df_out[columna]
+    valid_count = serie.count()
+    df_bins = None
+
+    # Verificación de datos suficientes y varianza
+    if valid_count < num_cuantiles or serie.nunique() < 2:
+        df_out[nueva_columna] = np.nan
+    else:
+        try:
+            # retbins=True devuelve la serie categórica y el array con los bordes
+            cuantiles, bins = pd.qcut(
+                serie,
+                q=num_cuantiles,
+                labels=False,
+                duplicates="drop",
+                retbins=True,
+            )
+
+            # Sumar 1 para etiquetar de 1 a N
+            df_out[nueva_columna] = cuantiles + 1
+
+            # Construir tabla de límites por categoría
+            # len(bins) - 1 corresponde al número real de cuantiles formados
+            num_categorias_creadas = len(bins) - 1
+            df_bins = pd.DataFrame(
+                {
+                    "categoria": range(1, num_categorias_creadas + 1),
+                    "lim_inferior": bins[:-1],
+                    "lim_superior": bins[1:],
+                }
+            )
+
+        except ValueError:
+            df_out[nueva_columna] = np.nan
+
+    # Convertir a tipo 'category'
+    df_out[nueva_columna] = df_out[nueva_columna].astype("category")
+
+    # Eliminar columna original si corresponde
+    if quitar_original:
+        df_out = df_out.drop(columns=[columna])
+
+    return df_out, df_bins
 
 
 def split_ultimo(
@@ -84,8 +150,7 @@ def evaluar_modelo_cat(
     y : pd.Series o np.ndarray
         Etiquetas de clase categóricas o multiclase.
     cv_splits : int, default=5
-        Número de folds para la validación cruzada estratificada.
-    random_state : int, default=42
+        Número de folds para la validación cruzada.
         Semilla para reproducibilidad del particionado.
     run_permutation_importance : bool, default=True
         Calcula importancia por permutación sobre el conjunto completo.
@@ -110,9 +175,9 @@ def evaluar_modelo_cat(
             else [str(cls) for cls in model.classes_]
         )
 
-    # 1. Validación Cruzada Estratificada Multimétrica
-    skf = StratifiedKFold(
-        n_splits=cv_splits, shuffle=True, random_state=random_state
+    # Validación Cruzada: 5 particiones secuenciales 
+    tscv = TimeSeriesSplit(
+        n_splits=cv_splits
     )
 
     scoring = {
@@ -127,7 +192,7 @@ def evaluar_modelo_cat(
         estimator=model,
         X=X,
         y=y,
-        cv=skf,
+        cv=tscv,
         scoring=scoring,
         return_train_score=True,
         n_jobs=-1,
@@ -143,7 +208,7 @@ def evaluar_modelo_cat(
         "Train vs Test Accuracy Gap": f"{(cv_results['train_accuracy'].mean() - cv_results['test_accuracy'].mean()):.4f}",
     }
 
-    # 2. Desempeño detallado y Matriz de Confusión
+    # Desempeño detallado y Matriz de Confusión
     # Asegura ajuste sobre los datos pasados si el estimador requiere cómputos directos
     #model.fit(X, y)
     y_pred = model.predict(X)
@@ -163,14 +228,14 @@ def evaluar_modelo_cat(
         columns=[f"Pred: {c}" for c in class_names],
     )
 
-    # 3. Importancia de Variables (Feature Importance)
-    # 3.1 MDI (Mean Decrease in Impurity) - nativo de RandomForest
+    # Importancia de Variables (Feature Importance)
+    # MDI (Mean Decrease in Impurity) - nativo de RandomForest
     mdi_importances = model.feature_importances_
     df_importance = pd.DataFrame(
         {"feature": feature_names, "importance_mdi": mdi_importances}
     ).sort_values(by="importance_mdi", ascending=False)
 
-    # 3.2 Permutation Feature Importance (más robusto frente a cardinalidad alta)
+    # Permutation Feature Importance (más robusto frente a cardinalidad alta)
     df_perm_importance = None
     if run_permutation_importance:
         perm_result = permutation_importance(
@@ -190,9 +255,9 @@ def evaluar_modelo_cat(
             }
         ).sort_values(by="perm_importance_mean", ascending=False)
 
-    # 4. Salida en consola estructurada
+    # Salida en consola
     print("=" * 60)
-    print("RESUMEN DE VALIDACIÓN CRUZADA ESTRATIFICADA")
+    print("RESUMEN DE VALIDACIÓN CRUZADA")
     print("=" * 60)
     for metric, val in cv_summary.items():
         print(f"{metric:<30}: {val}")
@@ -358,44 +423,59 @@ python -m src.cat_modeling
 '''
 def main():
     # Cargar fichero de precios
-    df_clean = cargar_datos_clean()
-    posibles_labels = [
-    'AUDUSD_Close_return',
-    'EURUSD_Close_return',
-    'GBPUSD_Close_return',
-    'USDCAD_Close_return',
-    'USDCHF_Close_return',
-    'USDJPY_Close_return'
-    ]
+    df = cargar_datos_clean()
+    columnas_clean = df.columns.tolist()
 
     # Modelo
-    simbolo = 'EURUSD'
+    simbolo_objetivo = 'USDCAD'
+    simbolos_restantes = [col for col in forex_cols if col != simbolo_objetivo]
 
-    objetivo = f"{simbolo}_Close_return"
+    # Se eliminan datos de los simbolos forex restantes
+    cols_restantes = [
+        col
+        for s in simbolos_restantes
+        for col in encontrar_columnas(columnas_clean, s)
+    ]
+    df = df.drop(columns=cols_restantes, errors='ignore')
+   
+    # Separar datos de entrenamiento y test
+    # Es necesario hacerlo antes de crear la variable categorica,
+    # para evitar data leakage al calcular las clases.
+    ultima_fecha = df.index.max()
+    df_train = df[df.index < ultima_fecha]
+    df_test = df[df.index == ultima_fecha]
+
+    # Variable objetivo: se crea variable categorica por cuantiles
+    objetivo = f"{simbolo_objetivo}_Close_return"
     objetivo_cat = f"{objetivo}_cat"
 
-    # Crear variable categorica
-    df_clean, tabla_bins = categorizar_en_cuantiles(
-        df_clean, 
+    df_train, tabla_bins = categorizar_en_cuantiles(
+        df_train, 
         columna=objetivo, 
         num_cuantiles=3, 
         quitar_original=False
         )
 
-    print(f"\n--- Rangos por Categoría para el ticker {simbolo} ---")
+    df_test[objetivo_cat] = np.nan
+
+    print(f"\n--- Rangos por Categoría para el ticker {simbolo_objetivo} ---")
     print(tabla_bins)
 
-    # Separar datos de entrenamiento y test
-    X_train, X_live, y_train, _ = split_ultimo(
-        df=df_clean, 
-        label=objetivo_cat, 
-        cols_excluded=posibles_labels+[objetivo_cat]
-        )
+    # Columnas a descartar de predictores
+    cols_excluded = [objetivo, objetivo_cat]
+    columnas_a_descartar = set(cols_excluded)
+    cols_drop = [c for c in columnas_a_descartar if c in df_train.columns]
+
+    X_train = df_train.drop(columns=cols_drop)
+    y_train = df_train[objetivo_cat]
+    
+    X_live = df_test.drop(columns=cols_drop)
+
 
     # Inicializar y entrenar
     model = RandomForestClassifier(
         random_state=42,
-        n_estimators=300,
+        n_estimators=500,
         max_depth=4,
         min_samples_leaf=30,
         min_samples_split= 50,
@@ -407,9 +487,8 @@ def main():
 
     # Realizar predicciones
     y_pred = model.predict(X_live)
-    ultima_fecha = X_live.index.max()
 
-    print(f"Entrenamiento modelo {simbolo} finalizado.")
+    print(f"Entrenamiento modelo {simbolo_objetivo} finalizado.")
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
 
     # Evaluar modelo
@@ -419,7 +498,7 @@ def main():
 
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
-            simbolo=simbolo,
+            simbolo=simbolo_objetivo,
             ultima_fecha=ultima_fecha,
             y_pred=y_pred
         )
