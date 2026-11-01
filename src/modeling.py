@@ -6,8 +6,9 @@ Entrenamiento de modelo de Clasificacion
 import pandas as pd
 import numpy as np
 import datetime as dt
+import argparse
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Sequence
 from datetime import datetime
 
 from sklearn.ensemble import RandomForestClassifier
@@ -450,11 +451,14 @@ Bloque principal
 Ejecucion desde el terminal:
 python -m src.modeling
 '''
-def main():
-    simbolo_objetivo = 'EURUSD'
+def main(
+        simbolo:str='EURUSD',
+        evaluar:bool=True
+):
+
     # Cargar fichero de precios
     df = cargar_datos_clean()
-    df = preprocesar_forex(df,simbolo_objetivo)
+    df = preprocesar_forex(df,simbolo)
 
     # Separar datos de entrenamiento y test  
     ultima_fecha = df.index.max()
@@ -462,7 +466,7 @@ def main():
 
     # Se crea la variable categorica a partir del dataset de entrenamiento
     # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{simbolo_objetivo}_Close_return"
+    objetivo = f"{simbolo}_Close_return"
     objetivo_cat = f"{objetivo}_cat"
 
     df_train, tabla_bins = categorizar_en_cuantiles(
@@ -473,7 +477,7 @@ def main():
         )
 
     
-    print(f"\n--- Rangos por Categoría para el ticker {simbolo_objetivo} ---")
+    print(f"\n--- Rangos por Categoría para el ticker {simbolo} ---")
     print(tabla_bins)
 
     # Separar predictores y variable objetivo
@@ -501,23 +505,39 @@ def main():
     y_pred_proba = model.predict_proba(X_live)
     df_probabilidades = pd.DataFrame(y_pred_proba, columns=model.classes_)
 
-    print(f"Entrenamiento modelo {simbolo_objetivo} finalizado.")
+    print(f"Entrenamiento modelo {simbolo} finalizado.")
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
     print("Probabilidades:")
     print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
-    evaluar = True
     if evaluar:
         dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
 
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
-            simbolo=simbolo_objetivo,
+            simbolo=simbolo,
             ultima_fecha=ultima_fecha,
             y_pred=y_pred
         )
 
+def entrypoint_modeling(argv: Sequence[str] | None = None):
+    """Punto de entrada de línea de comandos."""
+    parser = argparse.ArgumentParser(description="Módulo de Modelado Categórico")
+
+    parser.add_argument(
+        "--simbolo", type=str, default="EURUSD", help="Símbolo del activo"
+    )
+    parser.add_argument(
+            "--evaluar",
+            action="store_true",
+            help="Ejecuta la evaluación del modelo tras el entrenamiento",
+            default=True
+        )
+    args = parser.parse_args(argv)
+    
+    # Ejecuta la lógica central con los argumentos parseados
+    return main(simbolo=args.simbolo, evaluar=args.evaluar)
 
 if __name__ == '__main__':
-    main()
+    entrypoint_modeling()
