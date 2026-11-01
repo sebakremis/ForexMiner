@@ -80,7 +80,7 @@ def calcular_metricas_close(
     '''
     df_out = df.copy()
     for col in cols:
-        # Retornos y varianzas de los retornos
+        # Varianzas de los retornos
         df_out[f"{col}_return"] = df_out[col].pct_change(fill_method=None)
         df_out[f"{col}_var{periodo_corto}"] = df_out[f"{col}_return"].rolling(window=periodo_corto, min_periods=min_periodos).var()
 
@@ -160,6 +160,11 @@ def calcular_metricas_open(
 )->pd.DataFrame:
     df_out = df.copy()
     for simbolo in simbolos:
+        # Retorno semanal: dif entre el precio Close y Open semanal
+        #df_out[f"{simbolo}_Return_weekly"] = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
+
+
+        # Diferencia entre la apertura y el cierre anterior
         df_out[f"{simbolo}_Open_pct_diff_last_Close"] = calcular_pct_diff(df_out[f"{simbolo}_Open"], df_out[f"{simbolo}_Close"], lag_base=1)
 
     return df_out

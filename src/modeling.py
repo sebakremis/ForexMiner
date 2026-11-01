@@ -130,7 +130,7 @@ def categorizar_en_cuantiles(
     return df_out, df_bins
 
 
-def split_ultimo(
+def split_train_live(
     df_train: pd.DataFrame,
     df_live: pd.DataFrame,
     col_target:str, 
@@ -448,7 +448,7 @@ def registrar_evaluacion_excel(
 Bloque principal
 
 Ejecucion desde el terminal:
-python -m src.cat_modeling
+python -m src.modeling
 '''
 def main():
     simbolo_objetivo = 'EURUSD'
@@ -480,7 +480,7 @@ def main():
     # Se eliminan columnas de los datasets train y live
     variables_a_excluir = [objetivo]
 
-    X_train, y_train, X_live = split_ultimo(df_train=df_train, df_live=df_live, col_target=objetivo_cat,cols_excluded=variables_a_excluir)
+    X_train, y_train, X_live = split_train_live(df_train=df_train, df_live=df_live, col_target=objetivo_cat,cols_excluded=variables_a_excluir)
 
 
     # Inicializar modelo y entrenar
