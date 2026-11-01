@@ -8,6 +8,7 @@ import numpy as np
 import datetime as dt
 from pathlib import Path
 from typing import Tuple, Optional
+from datetime import datetime
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
@@ -30,6 +31,37 @@ def cargar_datos_clean()->pd.DataFrame:
         print(f"Ocurrió un error al leer el archivo Parquet: {e}")
         return pd.DataFrame()
 
+
+def preprocesar_forex(
+        df:pd.DataFrame,
+        target:str
+)->pd.DataFrame:
+    columnas_clean = df.columns.tolist()
+   
+    simbolos_restantes = [col for col in forex_cols if col != target]
+
+    # Se eliminan datos de los simbolos forex restantes
+    cols_restantes = [
+        col
+        for s in simbolos_restantes
+        for col in encontrar_columnas(columnas_clean, s)
+    ]
+    df = df.drop(columns=cols_restantes, errors='ignore')    
+    return df
+
+
+def separar_datos_live(
+        df:pd.DataFrame,
+        fecha:datetime
+)->tuple[pd.DataFrame, pd.DataFrame]:
+    '''
+    Divide el DataFrame en conjuntos de entrenamiento y prueba basándose en la fecha más reciente.
+    '''
+    df_train = df[df.index < fecha]
+    df_live = df[df.index == fecha].copy()
+
+    return df_train, df_live
+    
 
 def categorizar_en_cuantiles(
     df: pd.DataFrame,
@@ -99,32 +131,29 @@ def categorizar_en_cuantiles(
 
 
 def split_ultimo(
-    df: pd.DataFrame, 
-    label: str, 
+    df_train: pd.DataFrame,
+    df_live: pd.DataFrame,
+    col_target:str, 
     cols_excluded: list[str]
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    '''
-    Divide el DataFrame en conjuntos de entrenamiento y prueba basándose en la fecha más reciente.
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     '''
     
-    # Identificamos cuál es la fecha máxima en todo el dataset
-    ultima_fecha = df.index.max()
-    
-    # Separamos mediante máscaras booleanas
-    df_train = df[df.index < ultima_fecha]
-    df_test = df[df.index == ultima_fecha]
+    Tramifica la variable continua objetivo en clases. Es necesario hacerlo luego de separar los 
+    datos de la ultima fecha para evitar data leakage al calcular las clases.
+    '''
+    df_live.loc[:, col_target] = np.nan # se asigna a nan para evitar error al eliminar columnas
 
-    # Se descartan las columnas excluidas
+    # Columnas a descartar de predictores
+    cols_excluded.extend([col_target])
     columnas_a_descartar = set(cols_excluded)
-    cols_drop = [c for c in columnas_a_descartar if c in df.columns]
+    cols_drop = [c for c in columnas_a_descartar if c in df_train.columns]
 
     X_train = df_train.drop(columns=cols_drop)
-    y_train = df_train[label]
+    y_train = df_train[col_target]
     
-    X_test = df_test.drop(columns=cols_drop)
-    y_test = df_test[label]
-    
-    return X_train, X_test, y_train, y_test
+    X_live = df_live.drop(columns=cols_drop)
+
+    return X_train, y_train, X_live
 
 
 def evaluar_modelo_cat(
@@ -422,29 +451,16 @@ Ejecucion desde el terminal:
 python -m src.cat_modeling
 '''
 def main():
+    simbolo_objetivo = 'EURUSD'
     # Cargar fichero de precios
     df = cargar_datos_clean()
-    columnas_clean = df.columns.tolist()
+    df = preprocesar_forex(df,simbolo_objetivo)
 
-    # Modelo
-    simbolo_objetivo = 'USDCAD'
-    simbolos_restantes = [col for col in forex_cols if col != simbolo_objetivo]
-
-    # Se eliminan datos de los simbolos forex restantes
-    cols_restantes = [
-        col
-        for s in simbolos_restantes
-        for col in encontrar_columnas(columnas_clean, s)
-    ]
-    df = df.drop(columns=cols_restantes, errors='ignore')
-   
-    # Separar datos de entrenamiento y test
-    # Es necesario hacerlo antes de crear la variable categorica,
-    # para evitar data leakage al calcular las clases.
+    # Separar datos de entrenamiento y test  
     ultima_fecha = df.index.max()
-    df_train = df[df.index < ultima_fecha]
-    df_test = df[df.index == ultima_fecha]
+    df_train, df_live = separar_datos_live(df=df, fecha=ultima_fecha)
 
+    # Se crea la variable categorica a partir del dataset de entrenamiento
     # Variable objetivo: se crea variable categorica por cuantiles
     objetivo = f"{simbolo_objetivo}_Close_return"
     objetivo_cat = f"{objetivo}_cat"
@@ -456,23 +472,18 @@ def main():
         quitar_original=False
         )
 
-    df_test[objetivo_cat] = np.nan
-
+    
     print(f"\n--- Rangos por Categoría para el ticker {simbolo_objetivo} ---")
     print(tabla_bins)
 
-    # Columnas a descartar de predictores
-    cols_excluded = [objetivo, objetivo_cat]
-    columnas_a_descartar = set(cols_excluded)
-    cols_drop = [c for c in columnas_a_descartar if c in df_train.columns]
+    # Separar predictores y variable objetivo
+    # Se eliminan columnas de los datasets train y live
+    variables_a_excluir = [objetivo]
 
-    X_train = df_train.drop(columns=cols_drop)
-    y_train = df_train[objetivo_cat]
-    
-    X_live = df_test.drop(columns=cols_drop)
+    X_train, y_train, X_live = split_ultimo(df_train=df_train, df_live=df_live, col_target=objetivo_cat,cols_excluded=variables_a_excluir)
 
 
-    # Inicializar y entrenar
+    # Inicializar modelo y entrenar
     model = RandomForestClassifier(
         random_state=42,
         n_estimators=500,
@@ -487,9 +498,13 @@ def main():
 
     # Realizar predicciones
     y_pred = model.predict(X_live)
+    y_pred_proba = model.predict_proba(X_live)
+    df_probabilidades = pd.DataFrame(y_pred_proba, columns=model.classes_)
 
     print(f"Entrenamiento modelo {simbolo_objetivo} finalizado.")
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
+    print("Probabilidades:")
+    print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
     evaluar = True
