@@ -195,10 +195,10 @@ def encontrar_columnas(
 
 
 def procesar_precios(
-        periodo_sma_corta:int,
-        periodo_sma_larga:int,
-        periodo_var:int,
-        periodo_extremos:int
+        periodo_sma_corta:int=15,
+        periodo_sma_larga:int=50,
+        periodo_var:int=20,
+        periodo_extremos:int=10
 )->pd.DataFrame:
     df_precios = cargar_datos_raw(nombre_fichero="precios")
     columnas_originales = df_precios.columns.tolist()
@@ -311,17 +311,28 @@ def procesar_datos_macro() -> pd.DataFrame:
         "STLFSI_delta_20d"
     ].shift(4)
 
-    # Resampleo semanal tomando la última información disponible al viernes
+    # Resampleo semanal estándar sobre los datos históricos observados
     df_weekly = df_features_daily.resample("W-FRI").last()
 
-    # Alinear la etiqueta al lunes previo (estilo yfinance)
+    # Alinear la etiqueta al lunes previo
     df_weekly.index = df_weekly.index - pd.Timedelta(days=4)
     df_weekly.index.name = "Date"
 
-    # Lag de modelado (Predicción Contemporánea)
+    # Aplicar shift(1) para modelado
     df_weekly_features = df_weekly.shift(1)
 
-    return df_weekly_features
+    # Forzar la inclusión de la semana actual si no está presente
+    # Determinamos el lunes de la semana en curso
+    hoy = pd.Timestamp.now().normalize()
+    lunes_actual = hoy - pd.Timedelta(days=hoy.weekday())
+
+    if lunes_actual not in df_weekly_features.index:
+        # La información para predecir la semana actual es exactamente
+        # el último estado consolidado sin shift (df_weekly.iloc[-1])
+        df_weekly_features.loc[lunes_actual] = df_weekly.iloc[-1]
+
+    # Descartar las primeras filas con NaNs debidas a los cálculos iniciales
+    return df_weekly_features.dropna(how="all")
 
 
 # Transformaciones
