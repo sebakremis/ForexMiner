@@ -14,7 +14,7 @@ from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import TimeSeriesSplit, cross_validate
+from sklearn.model_selection import TimeSeriesSplit, cross_validate, GridSearchCV
 
 from src.transform import encontrar_columnas
 from src.config import carpeta_datos, intervalo_defecto, forex_cols
@@ -33,7 +33,7 @@ def cargar_datos_clean()->pd.DataFrame:
         return pd.DataFrame()
 
 
-def preprocesar_forex(
+def remover_pares_restantes(
         df:pd.DataFrame,
         target:str
 )->pd.DataFrame:
@@ -50,6 +50,7 @@ def preprocesar_forex(
     df = df.drop(columns=cols_restantes, errors='ignore')    
     return df
 
+# Funciones de pre-procesamiento
 
 def separar_datos_live(
         df:pd.DataFrame,
@@ -156,6 +157,44 @@ def split_train_live(
 
     return X_train, y_train, X_live
 
+
+def preprocesar_forex(
+        par:str,
+        variables_a_excluir:list[str]
+)->tuple[pd.DataFrame, pd.Series, pd.DataFrame, datetime]:
+    # Cargar fichero de precios
+    df = cargar_datos_clean()
+    df = remover_pares_restantes(df,par)
+
+    # Separar datos de entrenamiento y test  
+    ultima_fecha = df.index.max()
+    df_train, df_live = separar_datos_live(df=df, fecha=ultima_fecha)
+
+    # Se crea la variable categorica a partir del dataset de entrenamiento
+    # Variable objetivo: se crea variable categorica por cuantiles
+    objetivo = f"{par}_Close_return"
+    objetivo_cat = f"{objetivo}_cat"
+
+    df_train, tabla_bins = categorizar_en_cuantiles(
+        df_train, 
+        columna=objetivo, 
+        num_cuantiles=3, 
+        quitar_original=False
+        )
+
+    
+    print(f"\n--- Rangos por Categoría para el ticker {par} ---")
+    print(tabla_bins)
+
+    # Separar predictores y variable objetivo
+    variables_a_excluir.extend([objetivo])
+
+    X_train, y_train, X_live = split_train_live(df_train=df_train, df_live=df_live, col_target=objetivo_cat,cols_excluded=variables_a_excluir)
+
+    return X_train, y_train, X_live, ultima_fecha     
+
+
+# Funciones de evaluacion
 
 def evaluar_modelo_cat(
     model,
@@ -323,6 +362,7 @@ def evaluar_modelo_cat(
         "feature_importance_permutation": df_perm_importance,
     }
 
+
 def registrar_evaluacion_excel(
     dict_evaluacion,
     simbolo,
@@ -445,6 +485,50 @@ def registrar_evaluacion_excel(
     print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
 
+def optimizar_hiperparametros(
+        simbolo:str='EURUSD'
+):
+    tscv = TimeSeriesSplit(
+        n_splits=5 # cantidad de particiones temporales
+    )   
+
+    # Predictores a eliminar de los datasets train y live
+    predictores_a_excluir = []
+    X_train, y_train, X_live, ultima_fecha = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
+
+    print("Configurando GridSearchCV para {simbolo}")
+    modelo_base = RandomForestClassifier(random_state=42)
+
+    param_grid = {
+        'n_estimators': [400],
+        'max_depth': [5],
+        'min_samples_leaf': [40],
+        'min_samples_split': [5],
+        'max_samples': [0.3],
+        'max_features': [0.25],
+        'class_weight': ['balanced']
+    }
+
+    # Configurar el GridSearchCV
+    grid_search = GridSearchCV(
+        estimator=modelo_base,
+        param_grid=param_grid,
+        scoring='f1_macro',
+        cv=tscv,
+        n_jobs=-1,
+        verbose=2
+    )
+
+    # Entrenar con datos completos
+    print(f"Iniciando búsqueda de hiperparámetros. Esto tomará unos minutos.")
+    grid_search.fit(X_train, y_train)
+
+    # Resultados
+    print("\n--- Búsqueda Finalizada ---")
+    print("Mejores hiperparámetros encontrados:")
+    print(grid_search.best_params_)
+
+
 '''
 Bloque principal
 
@@ -454,45 +538,17 @@ python -m src.modeling
 def main(
         simbolo:str
 ):
-
-    # Cargar fichero de precios
-    df = cargar_datos_clean()
-    df = preprocesar_forex(df,simbolo)
-
-    # Separar datos de entrenamiento y test  
-    ultima_fecha = df.index.max()
-    df_train, df_live = separar_datos_live(df=df, fecha=ultima_fecha)
-
-    # Se crea la variable categorica a partir del dataset de entrenamiento
-    # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{simbolo}_Close_return"
-    objetivo_cat = f"{objetivo}_cat"
-
-    df_train, tabla_bins = categorizar_en_cuantiles(
-        df_train, 
-        columna=objetivo, 
-        num_cuantiles=3, 
-        quitar_original=False
-        )
-
-    
-    print(f"\n--- Rangos por Categoría para el ticker {simbolo} ---")
-    print(tabla_bins)
-
-    # Separar predictores y variable objetivo
-    # Se eliminan columnas de los datasets train y live
-    variables_a_excluir = [objetivo]
-
-    X_train, y_train, X_live = split_train_live(df_train=df_train, df_live=df_live, col_target=objetivo_cat,cols_excluded=variables_a_excluir)
-
+    # Predictores a eliminar de los datasets train y live
+    predictores_a_excluir = []
+    X_train, y_train, X_live, ultima_fecha = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     # Inicializar modelo y entrenar
     model = RandomForestClassifier(
         random_state=42,
-        n_estimators=500,
-        max_depth=4,
-        min_samples_leaf=30,
-        min_samples_split= 50,
+        n_estimators=400,
+        max_depth=5,
+        min_samples_leaf=40,
+        min_samples_split= 5,
         max_samples= 0.3,
         max_features=0.25,
         class_weight='balanced'        
