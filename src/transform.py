@@ -12,7 +12,7 @@ from typing import List
 from sklearn.preprocessing import PowerTransformer
 
 from src.config import (carpeta_datos, activos_cols, forex_cols,
-                        otros_activos_cols, daily_macro_cols
+                        otros_activos_cols
                         )
 
 
@@ -65,32 +65,50 @@ def calcular_pct_diff(
 def calcular_metricas_close(
         df:pd.DataFrame,
         simbolos:list[str],
-        periodo_sma_corta:int=15,
-        periodo_sma_larga:int=50,
         periodo_var:int=20,
-        periodo_rango:int=10,
-        min_periodos:int | None = None,
-        calcular_rango:bool=True,
-        calcular_medias:bool=True
+        periodo_retorno_largo:int | None = None,
+        medias:list[int] | None = None,        
+        periodo_rango:int | None = None,
+        min_periodos:int | None = None
 )->pd.DataFrame:
     '''
     Calcula metricas sobre los precios de cierre:
     - Retornos
     - Varianza de los retornos
+    - Aceleraciones
+    - Ratios y diferencias: si se especifica periodo_retorno_largo
     - Range position: posicion en el rango [min,max] para el periodo especificado
-    - Diferencia entre medias moviles del periodo corto y largo
+    - Diferencia entre medias moviles del periodo corto y largo [periodo_corto, periodo_largo]
 
-    Se expresan Maximo, Minimo y medias moviles relativos al precio Close.
     '''
     df_out = df.copy()
     for simbolo in simbolos:
-        # Varianzas de los retornos
+        # Retornos, aceleraciones y Varianzas de los retornos
         columna_close = f"{simbolo}_Close"
-        df_out[f"{simbolo}_return"] = df_out[columna_close].pct_change(fill_method=None)
-        df_out[f"{simbolo}_var{periodo_var}"] = df_out[f"{simbolo}_return"].rolling(window=periodo_var, min_periods=min_periodos).var()
+        ret_col = f"{simbolo}_return"
+        acc_col = f"{simbolo}_acceleration"
+        var_col = f"{simbolo}_var_{periodo_var}"
+        df_out[ret_col] = df_out[columna_close].pct_change(fill_method=None)
+        df_out[acc_col] = df_out[ret_col].diff()
+        df_out[var_col] = df_out[ret_col].rolling(window=periodo_var, min_periods=min_periodos).var()
+
+        if periodo_retorno_largo:
+
+            # Retorno: diferencia entre retorno corto y largo           
+            retorno_largo = df_out[columna_close].pct_change(periodo_retorno_largo,fill_method=None)
+            df_out[f"{simbolo}_return_diff"] = df_out[ret_col] - retorno_largo
+
+            # Lo mismo con Aceleraciones            
+            aceleracion_larga = retorno_largo.diff()
+            df_out[f"{simbolo}_acceleration_diff"] = df_out[acc_col] - aceleracion_larga
+
+            # Varianzas: ratio entre varianza corta y larga           
+            varianza_larga = retorno_largo.rolling(window=periodo_var, min_periods=min_periodos).var()
+            epsilon = 1e-8
+            df_out[f"{simbolo}_var_ratio"] = df_out[var_col] / (varianza_larga+epsilon)
 
         # Range position
-        if calcular_rango:
+        if periodo_rango:
             # Se calculan maximos y minimos
             maximo = (df_out[columna_close]
                                 .rolling(window=periodo_rango, min_periods=min_periodos)
@@ -103,11 +121,11 @@ def calcular_metricas_close(
 
             # Se calcula la posicion dentro del rango [-1 (Close igual al Minimo), 1 (Close igual al Maximo)]
             df_out[f"{simbolo}_range{periodo_rango}_position"] = ((df_out[columna_close] - minimo) - (maximo - df_out[columna_close])) / (maximo-minimo)
-
-
-               
+              
         # Medias moviles
-        if calcular_medias:
+        if medias:
+            periodo_sma_corta = medias[0]
+            periodo_sma_larga = medias[1]
             sma_corta = df_out[columna_close].rolling(window=periodo_sma_corta, min_periods=min_periodos).mean()
             sma_larga = df_out[columna_close].rolling(window=periodo_sma_larga, min_periods=min_periodos).mean()
 
@@ -198,10 +216,6 @@ def encontrar_columnas(
 
 
 def procesar_precios(
-        periodo_sma_corta:int=15,
-        periodo_sma_larga:int=50,
-        periodo_var:int=20,
-        periodo_rango:int=10
 )->pd.DataFrame:
     df_precios = cargar_datos_raw(nombre_fichero="precios")
     columnas_originales = df_precios.columns.tolist()
@@ -211,14 +225,16 @@ def procesar_precios(
     df_precios = calcular_metricas_close(
         df=df_precios, 
         simbolos=forex_cols,
-        periodo_sma_corta=periodo_sma_corta,
-        periodo_sma_larga=periodo_sma_larga,
-        periodo_var = periodo_var,
-        periodo_rango=periodo_rango
+        periodo_retorno_largo=12,
+        medias=[15,50],
+        periodo_rango=10
         )
 
     # Otros activos: sin calcular medias ni extremos
-    df_precios = calcular_metricas_close(df=df_precios, simbolos=otros_activos_cols, calcular_medias=False, calcular_rango=False)
+    df_precios = calcular_metricas_close(
+        df=df_precios, 
+        simbolos=otros_activos_cols
+        )
 
     # Metricas sobre Volumen
     columnas_volumen = encontrar_columnas(
@@ -390,17 +406,8 @@ python -m src.transform
 '''
 def main(
 ):
-    # Cargar y procesar fichero de precios
-    # Parametros de los indicadores
-    periodo_sma_corta = 15
-    periodo_sma_larga = 50
-    periodo_var = 20
-    periodo_rango = 50    
+    # Cargar y procesar fichero de precios 
     df_precios = procesar_precios(
-        periodo_sma_corta=periodo_sma_corta,
-        periodo_sma_larga=periodo_sma_larga,
-        periodo_var=periodo_var,
-        periodo_rango=periodo_rango
     )
 
     # Cargar y procesar datos macro
@@ -417,7 +424,7 @@ def main(
     
     # Transformaciones log
     columnas_spread = encontrar_columnas(columnas_features, "High_Low_spread")
-    columnas_var = encontrar_columnas(columnas_features, f"_var{periodo_var}")
+    columnas_var = encontrar_columnas(columnas_features, f"_var_")
     
 
     columnas_log = columnas_spread + columnas_var
@@ -429,6 +436,7 @@ def main(
 
     columnas_yeo =  columnas_volume_pct_diff + columnas_open_pct_diff +[
         "USDCAD_return_lag1",
+        "USDCAD_acceleration_lag1",
         "VIX_pct_chg_20d",
         "STLFSI_delta_20d"
         ]

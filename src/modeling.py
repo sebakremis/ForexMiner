@@ -15,6 +15,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import TimeSeriesSplit, cross_validate, GridSearchCV
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
 
 from src.transform import encontrar_columnas
 from src.config import carpeta_datos, intervalo_defecto, forex_cols
@@ -193,6 +195,34 @@ def preprocesar_forex(
 
     return X_train, y_train, X_live, ultima_fecha     
 
+# Transformacion de variables: escalar en una ventana movil
+
+class RollingStandardScaler(BaseEstimator, TransformerMixin):
+
+    def __init__(self, window=20, min_periods=None, eps=1e-8):
+        self.window = window
+        self.min_periods = min_periods if min_periods else window
+        self.eps = eps
+
+    def fit(self, X, y=None):
+        # En series temporales online/rolling no hay parámetros fijos que "aprender" de un set estático
+        return self
+
+    def transform(self, X):
+        is_df = isinstance(X, pd.DataFrame)
+        df = X.copy() if is_df else pd.DataFrame(X)
+
+        # Calculamos sobre la ventana retrospectiva cerrada (shift 1)
+        r_mean = (
+            df.shift(1).rolling(window=self.window, min_periods=self.min_periods).mean()
+        )
+        r_std = (
+            df.shift(1).rolling(window=self.window, min_periods=self.min_periods).std()
+        )
+
+        scaled = (df - r_mean) / (r_std + self.eps)
+
+        return scaled if is_df else scaled.to_numpy()
 
 # Funciones de evaluacion
 
@@ -497,16 +527,19 @@ def optimizar_hiperparametros(
     X_train, y_train, X_live, ultima_fecha = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     print("Configurando GridSearchCV para {simbolo}")
-    modelo_base = RandomForestClassifier(random_state=42)
+    modelo_base = Pipeline(steps=[
+        ('scaler', RollingStandardScaler(window=20)),
+        ('rf', RandomForestClassifier(random_state=42))
+    ])
 
     param_grid = {
-        'n_estimators': [400],
-        'max_depth': [5],
-        'min_samples_leaf': [40],
-        'min_samples_split': [5],
-        'max_samples': [0.3],
-        'max_features': [0.25],
-        'class_weight': ['balanced']
+        'rf__n_estimators': [450],
+        'rf__max_depth': [4],
+        'rf__min_samples_leaf': [50],
+        'rf__min_samples_split': [4],
+        'rf__max_samples': [0.4],
+        'rf__max_features': [0.3],
+        'rf__class_weight': ['balanced_subsample']
     }
 
     # Configurar el GridSearchCV
@@ -543,22 +576,27 @@ def main(
     X_train, y_train, X_live, ultima_fecha = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     # Inicializar modelo y entrenar
-    model = RandomForestClassifier(
-        random_state=42,
-        n_estimators=400,
-        max_depth=5,
-        min_samples_leaf=40,
-        min_samples_split= 5,
-        max_samples= 0.3,
-        max_features=0.25,
-        class_weight='balanced'        
-    )
-    model.fit(X_train, y_train)
+    pipe = Pipeline([
+        ('scaler', RollingStandardScaler(window=20)),
+        ('model', RandomForestClassifier(
+            random_state=42,
+            n_estimators=450,
+            max_depth=None,
+            min_samples_leaf=20,
+            min_samples_split= 4,
+            max_samples= None,
+            max_features='sqrt',
+            class_weight='balanced_subsample'            
+        ))
+
+    ])
+
+    pipe.fit(X_train, y_train)
 
     # Realizar predicciones
-    y_pred = model.predict(X_live)
-    y_pred_proba = model.predict_proba(X_live)
-    df_probabilidades = pd.DataFrame(y_pred_proba, columns=model.classes_)
+    y_pred = pipe.predict(X_live)
+    y_pred_proba = pipe.predict_proba(X_live)
+    df_probabilidades = pd.DataFrame(y_pred_proba, columns=pipe.classes_)
 
     print(f"Entrenamiento modelo {simbolo} finalizado.")
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
@@ -566,7 +604,8 @@ def main(
     print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
-    dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
+    rf_model = pipe.named_steps['model']
+    dict_evaluacion = evaluar_modelo_cat(model=rf_model, X=X_train, y=y_train)
 
     registrar_evaluacion_excel(
         dict_evaluacion=dict_evaluacion,
