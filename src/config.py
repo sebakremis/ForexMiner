@@ -43,4 +43,5 @@ DAILY_MACRO_SERIES: Dict[str, str] = {
 # Listas automaticas:
 forex_cols = list(FOREX_MAJORS.values())
 otros_activos_cols = list(OTROS_ACTIVOS.values())
+activos_cols = list(ACTIVOS.values())
 daily_macro_cols = list(DAILY_MACRO_SERIES.values())

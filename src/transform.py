@@ -11,8 +11,8 @@ from typing import List
 
 from sklearn.preprocessing import PowerTransformer
 
-from src.config import (carpeta_datos, ACTIVOS, forex_cols, 
-                        daily_macro_cols
+from src.config import (carpeta_datos, activos_cols, forex_cols,
+                        otros_activos_cols, daily_macro_cols
                         )
 
 
@@ -64,10 +64,12 @@ def calcular_pct_diff(
                                                                     
 def calcular_metricas_close(
         df:pd.DataFrame,
-        cols:list[str],
+        simbolos:list[str],
         periodo_corto:int=20,
         periodo_largo:int=50,
-        min_periodos:int | None = None
+        min_periodos:int | None = None,
+        calcular_extremos:bool=True,
+        calcular_medias:bool=True
 )->pd.DataFrame:
     '''
     Calcula metricas sobre los precios de cierre:
@@ -79,41 +81,37 @@ def calcular_metricas_close(
     Se expresan Maximo, Minimo y medias moviles relativos al precio Close.
     '''
     df_out = df.copy()
-    for col in cols:
+    for simbolo in simbolos:
         # Varianzas de los retornos
-        df_out[f"{col}_return"] = df_out[col].pct_change(fill_method=None)
-        df_out[f"{col}_var{periodo_corto}"] = df_out[f"{col}_return"].rolling(window=periodo_corto, min_periods=min_periodos).var()
+        columna_close = f"{simbolo}_Close"
+        df_out[f"{simbolo}_return"] = df_out[columna_close].pct_change(fill_method=None)
+        df_out[f"{simbolo}_var{periodo_corto}"] = df_out[f"{simbolo}_return"].rolling(window=periodo_corto, min_periods=min_periodos).var()
 
         # Maximos y minimos
-        df_out[f"{col}_max{periodo_corto}"] = (df_out[col]
-                                               .rolling(window=periodo_corto, min_periods=min_periodos)
-                                               .max()
-                                               )
-        df_out[f"{col}_min{periodo_corto}"] = (df_out[col]
-                                               .rolling(window=periodo_corto, min_periods=min_periodos)
-                                               .min()
-                                               )
+        if calcular_extremos:
+            maximo = (df_out[columna_close]
+                                .rolling(window=periodo_corto, min_periods=min_periodos)
+                                .max()
+                                )
+            minimo = (df_out[columna_close]
+                                .rolling(window=periodo_corto, min_periods=min_periodos)
+                                .min()
+                                )
 
-        # Se expresan en diferencias porcentuales relativas al precio Close
-        df_out[f"{col}_max{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_max{periodo_corto}"], df_out[col])
-        df_out[f"{col}_min{periodo_corto}"] = calcular_pct_diff(df_out[f"{col}_min{periodo_corto}"], df_out[col])
+            # Se expresan Max y Min en diferencias porcentuales relativas al precio Close
+            df_out[f"{simbolo}_max{periodo_corto}_pct_diff_Close"] = calcular_pct_diff(maximo, df_out[columna_close])
+            df_out[f"{simbolo}_min{periodo_corto}_pct_diff_Close"] = calcular_pct_diff(minimo, df_out[columna_close])
 
                
         # Medias moviles
-        sma_corta = df_out[col].rolling(window=periodo_corto, min_periods=min_periodos).mean()
-        sma_larga = df_out[col].rolling(window=periodo_largo, min_periods=min_periodos).mean()
+        if calcular_medias:
+            sma_corta = df_out[columna_close].rolling(window=periodo_corto, min_periods=min_periodos).mean()
+            sma_larga = df_out[columna_close].rolling(window=periodo_largo, min_periods=min_periodos).mean()
 
-        # Diferencia porcentual entre medias
-        df_out[f"{col}_sma{periodo_corto}_pct_diff_sma{periodo_largo}"] = calcular_pct_diff(
-            sma_corta,
-            sma_larga)
-
-        # Se renombran las columnas pct_diff_Close
-        mapeo_nombres = {
-            f"{col}_max{periodo_corto}" : f"{col}_max{periodo_corto}_pct_diff_Close",
-            f"{col}_min{periodo_corto}" : f"{col}_min{periodo_corto}_pct_diff_Close",
-        }
-        df_out.rename(columns=mapeo_nombres, inplace=True)        
+            # Diferencia porcentual entre medias
+            df_out[f"{simbolo}_sma{periodo_corto}_pct_diff_sma{periodo_largo}"] = calcular_pct_diff(
+                sma_corta,
+                sma_larga)   
 
     return df_out
 
@@ -138,7 +136,7 @@ def calcular_metricas_volumen(
     return df_out
 
 
-def calcular_metricas_extremos(
+def calcular_metricas_high_low(
         df:pd.DataFrame,
         simbolos:list[str]
 )->pd.DataFrame:
@@ -160,10 +158,6 @@ def calcular_metricas_open(
 )->pd.DataFrame:
     df_out = df.copy()
     for simbolo in simbolos:
-        # Retorno semanal: dif entre el precio Close y Open semanal
-        #df_out[f"{simbolo}_Return_weekly"] = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
-
-
         # Diferencia entre la apertura y el cierre anterior
         df_out[f"{simbolo}_Open_pct_diff_last_Close"] = calcular_pct_diff(df_out[f"{simbolo}_Open"], df_out[f"{simbolo}_Close"], lag_base=1)
 
@@ -197,16 +191,16 @@ def encontrar_columnas(
     columnas_encontradas = [col for col in columnas_target if cadena in col]
     return columnas_encontradas
 
+
 def procesar_precios()->pd.DataFrame:
     df_precios = cargar_datos_raw(nombre_fichero="precios")
     columnas_originales = df_precios.columns.tolist()
 
-    # Metricas sobre Precios Close
-    columnas_close = encontrar_columnas(
-        columnas_target=columnas_originales,
-        cadena="Close"
-    )
-    df_precios = calcular_metricas_close(df=df_precios, cols=columnas_close)
+    # Metricas sobre precios Close: forex
+    df_precios = calcular_metricas_close(df=df_precios, simbolos=forex_cols)
+
+    # Otros activos: sin calcular medias ni extremos
+    df_precios = calcular_metricas_close(df=df_precios, simbolos=otros_activos_cols, calcular_medias=False, calcular_extremos=False)
 
     # Metricas sobre Volumen
     columnas_volumen = encontrar_columnas(
@@ -215,12 +209,11 @@ def procesar_precios()->pd.DataFrame:
     )
     df_precios = calcular_metricas_volumen(df=df_precios, cols=columnas_volumen)
 
-    # Metricas sobre precios extremos High - Low
-    simbolos = list(ACTIVOS.values())
-    df_precios = calcular_metricas_extremos(df=df_precios, simbolos=simbolos)
+    # Metricas sobre precios extremos High - Low para pares forex
+    df_precios = calcular_metricas_high_low(df=df_precios, simbolos=forex_cols)
 
-    # Metricas sobre precios open
-    df_precios = calcular_metricas_open(df=df_precios, simbolos=simbolos)   
+    # Metricas sobre precios open: todos los activos
+    df_precios = calcular_metricas_open(df=df_precios, simbolos=activos_cols)   
 
     # Eliminar columnas originales (absolutas)
     df_precios.drop(columns=columnas_originales, inplace=True)
@@ -232,7 +225,7 @@ def procesar_precios()->pd.DataFrame:
     # Lag sobre retornos Forex: sin eliminar el original para usar como labels
     retornos_forex = []
     for major in forex_cols:
-        col_retorno_forex = encontrar_columnas(columnas_relativas, f"{major}_Close_return")[0]
+        col_retorno_forex = encontrar_columnas(columnas_relativas, f"{major}_return")[0]
         retornos_forex.append(col_retorno_forex)
 
     df_precios = aplicar_lag(df=df_precios, columnas=retornos_forex, quitar_original=False)
@@ -385,14 +378,14 @@ def main(
     
     # Transformaciones log
     columnas_spread = encontrar_columnas(columnas_features, "High_Low_spread")
-    columnas_var = encontrar_columnas(columnas_features, "Close_var20")
+    columnas_var = encontrar_columnas(columnas_features, "_var20")
     
 
     columnas_log = columnas_spread + columnas_var
     df_transform = transformar_log(df_merged, cols=columnas_log)
 
     # Transformar log1p
-    columnas_max = encontrar_columnas(columnas_features, "Close_max20")
+    columnas_max = encontrar_columnas(columnas_features, "_max20")
 
     columnas_log1p = columnas_max
     df_transform = transformar_log(df_transform, cols=columnas_log1p, calculation_1p=True)
@@ -404,7 +397,7 @@ def main(
     columnas_open_pct_diff = encontrar_columnas(columnas_features, f"Open_pct_diff_last_Close")
 
     columnas_yeo =  columnas_high_pct_diff  + columnas_low_pct_diff + columnas_volume_pct_diff + columnas_open_pct_diff +[
-        "USDCAD_Close_return_lag1",
+        "USDCAD_return_lag1",
         "VIX_pct_chg_20d",
         "STLFSI_delta_20d"
         ]

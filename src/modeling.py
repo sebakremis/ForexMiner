@@ -172,7 +172,7 @@ def preprocesar_forex(
 
     # Se crea la variable categorica a partir del dataset de entrenamiento
     # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{par}_Close_return"
+    objetivo = f"{par}_return"
     objetivo_cat = f"{objetivo}_cat"
 
     df_train, tabla_bins = categorizar_en_cuantiles(
