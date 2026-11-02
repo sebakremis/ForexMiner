@@ -9,6 +9,13 @@ from src.extract import main as extraer
 from src.transform import main as transformar
 from src.modeling import main as modelar
 
+
+'''
+Bloque principal
+
+Ejecutar desde el terminal:
+python main.py
+'''
 def main():
     extraer()
     transformar()

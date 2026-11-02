@@ -65,8 +65,10 @@ def calcular_pct_diff(
 def calcular_metricas_close(
         df:pd.DataFrame,
         simbolos:list[str],
-        periodo_corto:int=20,
-        periodo_largo:int=50,
+        periodo_sma_corta:int=15,
+        periodo_sma_larga:int=50,
+        periodo_var:int=20,
+        periodo_extremos:int=10,
         min_periodos:int | None = None,
         calcular_extremos:bool=True,
         calcular_medias:bool=True
@@ -74,9 +76,9 @@ def calcular_metricas_close(
     '''
     Calcula metricas sobre los precios de cierre:
     - Retornos
-    - Varianza de los retornos en el periodo corto
-    - Maximo y minimo en el periodo corto
-    - Diferencia entre medias moviles
+    - Varianza de los retornos
+    - Maximo y minimo
+    - Diferencia entre medias moviles del periodo corto y largo
 
     Se expresan Maximo, Minimo y medias moviles relativos al precio Close.
     '''
@@ -85,31 +87,31 @@ def calcular_metricas_close(
         # Varianzas de los retornos
         columna_close = f"{simbolo}_Close"
         df_out[f"{simbolo}_return"] = df_out[columna_close].pct_change(fill_method=None)
-        df_out[f"{simbolo}_var{periodo_corto}"] = df_out[f"{simbolo}_return"].rolling(window=periodo_corto, min_periods=min_periodos).var()
+        df_out[f"{simbolo}_var{periodo_var}"] = df_out[f"{simbolo}_return"].rolling(window=periodo_var, min_periods=min_periodos).var()
 
         # Maximos y minimos
         if calcular_extremos:
             maximo = (df_out[columna_close]
-                                .rolling(window=periodo_corto, min_periods=min_periodos)
+                                .rolling(window=periodo_extremos, min_periods=min_periodos)
                                 .max()
                                 )
             minimo = (df_out[columna_close]
-                                .rolling(window=periodo_corto, min_periods=min_periodos)
+                                .rolling(window=periodo_extremos, min_periods=min_periodos)
                                 .min()
                                 )
 
             # Se expresan Max y Min en diferencias porcentuales relativas al precio Close
-            df_out[f"{simbolo}_max{periodo_corto}_pct_diff_Close"] = calcular_pct_diff(maximo, df_out[columna_close])
-            df_out[f"{simbolo}_min{periodo_corto}_pct_diff_Close"] = calcular_pct_diff(minimo, df_out[columna_close])
+            df_out[f"{simbolo}_max{periodo_extremos}_pct_diff_Close"] = calcular_pct_diff(maximo, df_out[columna_close])
+            df_out[f"{simbolo}_min{periodo_extremos}_pct_diff_Close"] = calcular_pct_diff(minimo, df_out[columna_close])
 
                
         # Medias moviles
         if calcular_medias:
-            sma_corta = df_out[columna_close].rolling(window=periodo_corto, min_periods=min_periodos).mean()
-            sma_larga = df_out[columna_close].rolling(window=periodo_largo, min_periods=min_periodos).mean()
+            sma_corta = df_out[columna_close].rolling(window=periodo_sma_corta, min_periods=min_periodos).mean()
+            sma_larga = df_out[columna_close].rolling(window=periodo_sma_larga, min_periods=min_periodos).mean()
 
             # Diferencia porcentual entre medias
-            df_out[f"{simbolo}_sma{periodo_corto}_pct_diff_sma{periodo_largo}"] = calcular_pct_diff(
+            df_out[f"{simbolo}_sma{periodo_sma_corta}_pct_diff_sma{periodo_sma_larga}"] = calcular_pct_diff(
                 sma_corta,
                 sma_larga)   
 
@@ -192,12 +194,26 @@ def encontrar_columnas(
     return columnas_encontradas
 
 
-def procesar_precios()->pd.DataFrame:
+def procesar_precios(
+        periodo_sma_corta:int,
+        periodo_sma_larga:int,
+        periodo_var:int,
+        periodo_extremos:int
+)->pd.DataFrame:
     df_precios = cargar_datos_raw(nombre_fichero="precios")
     columnas_originales = df_precios.columns.tolist()
 
     # Metricas sobre precios Close: forex
-    df_precios = calcular_metricas_close(df=df_precios, simbolos=forex_cols)
+
+    df_precios = calcular_metricas_close(
+        df=df_precios, 
+        simbolos=forex_cols,
+        periodo_sma_corta=periodo_sma_corta,
+        periodo_sma_larga=periodo_sma_larga,
+        periodo_var = periodo_var,
+        periodo_extremos=periodo_extremos
+
+        )
 
     # Otros activos: sin calcular medias ni extremos
     df_precios = calcular_metricas_close(df=df_precios, simbolos=otros_activos_cols, calcular_medias=False, calcular_extremos=False)
@@ -361,10 +377,20 @@ python -m src.transform
 '''
 def main(
 ):
-    # Cargar fichero de precios    
-    df_precios = procesar_precios()
+    # Cargar y procesar fichero de precios
+    # Parametros de los indicadores
+    periodo_sma_corta = 15
+    periodo_sma_larga = 50
+    periodo_var = 20
+    periodo_extremos = 10    
+    df_precios = procesar_precios(
+        periodo_sma_corta=periodo_sma_corta,
+        periodo_sma_larga=periodo_sma_larga,
+        periodo_var=periodo_var,
+        periodo_extremos=periodo_extremos
+    )
 
-    # Cargar datos macro
+    # Cargar y procesar datos macro
     df_macro = procesar_datos_macro()
 
     df_merged = df_precios.join(df_macro, how='inner')
@@ -378,14 +404,14 @@ def main(
     
     # Transformaciones log
     columnas_spread = encontrar_columnas(columnas_features, "High_Low_spread")
-    columnas_var = encontrar_columnas(columnas_features, "_var20")
+    columnas_var = encontrar_columnas(columnas_features, f"_var{periodo_var}")
     
 
     columnas_log = columnas_spread + columnas_var
     df_transform = transformar_log(df_merged, cols=columnas_log)
 
     # Transformar log1p
-    columnas_max = encontrar_columnas(columnas_features, "_max20")
+    columnas_max = encontrar_columnas(columnas_features, f"_max{periodo_extremos}")
 
     columnas_log1p = columnas_max
     df_transform = transformar_log(df_transform, cols=columnas_log1p, calculation_1p=True)
@@ -393,7 +419,7 @@ def main(
     # Transformaciones yeo-johnson
     columnas_high_pct_diff = encontrar_columnas(columnas_features, "High_pct_diff_Close")
     columnas_low_pct_diff = encontrar_columnas(columnas_features, "Low_pct_diff_Close")
-    columnas_volume_pct_diff = encontrar_columnas(columnas_features, "Volume_pct_diff_sma20")
+    columnas_volume_pct_diff = encontrar_columnas(columnas_features, "Volume_pct_diff_sma")
     columnas_open_pct_diff = encontrar_columnas(columnas_features, f"Open_pct_diff_last_Close")
 
     columnas_yeo =  columnas_high_pct_diff  + columnas_low_pct_diff + columnas_volume_pct_diff + columnas_open_pct_diff +[
