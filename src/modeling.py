@@ -577,15 +577,15 @@ def main(
 
     # Inicializar modelo y entrenar
     pipe = Pipeline([
-        ('scaler', RollingStandardScaler(window=20)),
+        #('scaler', RollingStandardScaler(window=10)), 
         ('model', RandomForestClassifier(
             random_state=42,
             n_estimators=450,
-            max_depth=None,
-            min_samples_leaf=20,
+            max_depth=4,
+            min_samples_leaf=50,
             min_samples_split= 4,
-            max_samples= None,
-            max_features='sqrt',
+            max_samples= 0.4,
+            max_features= 0.3,
             class_weight='balanced_subsample'            
         ))
 

@@ -17,8 +17,8 @@ Ejecutar desde el terminal:
 python main.py
 '''
 def main():
-    extraer()
-    transformar()
+    #extraer()
+    #transformar()
     for pair in forex_cols:
         modelar(simbolo=pair)
 
