@@ -452,8 +452,7 @@ Ejecucion desde el terminal:
 python -m src.modeling
 '''
 def main(
-        simbolo:str='EURUSD',
-        evaluar:bool=True
+        simbolo:str
 ):
 
     # Cargar fichero de precios
@@ -511,15 +510,14 @@ def main(
     print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
-    if evaluar:
-        dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
+    dict_evaluacion = evaluar_modelo_cat(model=model, X=X_train, y=y_train)
 
-        registrar_evaluacion_excel(
-            dict_evaluacion=dict_evaluacion,
-            simbolo=simbolo,
-            ultima_fecha=ultima_fecha,
-            y_pred=y_pred
-        )
+    registrar_evaluacion_excel(
+        dict_evaluacion=dict_evaluacion,
+        simbolo=simbolo,
+        ultima_fecha=ultima_fecha,
+        y_pred=y_pred
+    )
 
 def entrypoint_modeling(argv: Sequence[str] | None = None):
     """Punto de entrada de línea de comandos."""
@@ -528,16 +526,10 @@ def entrypoint_modeling(argv: Sequence[str] | None = None):
     parser.add_argument(
         "--simbolo", type=str, default="EURUSD", help="Símbolo del activo"
     )
-    parser.add_argument(
-            "--evaluar",
-            action="store_true",
-            help="Ejecuta la evaluación del modelo tras el entrenamiento",
-            default=True
-        )
     args = parser.parse_args(argv)
     
     # Ejecuta la lógica central con los argumentos parseados
-    return main(simbolo=args.simbolo, evaluar=args.evaluar)
+    return main(simbolo=args.simbolo)
 
 if __name__ == '__main__':
     entrypoint_modeling()
