@@ -92,94 +92,56 @@ def top_correlaciones(df:pd.DataFrame, top_n:int=20):
     )
     return pairs.sort_values(by="correlation", ascending=False).head(top_n)
 
-def pintar_matriz_correlacion(
+
+def top_correlaciones_objetivo(
     df: pd.DataFrame,
-    method: str = "spearman",
-    figsize: tuple = (16, 12),
-    cmap: str = "vlag",
-    annot: bool = True,
-    top_n_pairs: int = 10,
-    title: Optional[str] = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Calcula y grafica la matriz de correlación triangular para la fase EDA, 
-    extrayendo además los pares más correlacionados.
+    target_col: str,
+    top_n: int = 20,
+    usar_absoluto: bool = True,
+    method: str = "pearson",
+) -> pd.DataFrame:
+    """Calcula las correlaciones de todas las columnas de un DataFrame respecto a una columna objetivo.
 
-    Parámetros
-    ----------
-    df : pd.DataFrame
-        DataFrame con las 20 features macroeconómicas y de precios procesadas.
-    method : str, default 'spearman'
-        Método de correlación ('spearman' o 'pearson'). Spearman se recomienda
-        por la presencia de shocks de volatilidad no lineales (VIX, retornos).
-    figsize : tuple, default (16, 12)
-        Dimensiones de la figura de Matplotlib.
-    cmap : str, default 'vlag'
-        Paleta divergente centrada en cero (e.g. 'vlag', 'coolwarm',
-        'RdBu_r').
-    annot : bool, default True
-        Si se imprimen los coeficientes numéricos en cada celda.
-    top_n_pairs : int, default 10
-        Cantidad de pares de mayor correlación absoluta a reportar en tabla.
-    title : str, optional
-        Título del heatmap.
-
-    Retorna
-    -------
-    corr_matrix : pd.DataFrame
-        Matriz cuadrada de correlaciones completa.
-    top_pairs_df : pd.DataFrame
-        Ranking con los pares de variables más fuertemente correlacionados.
+    Parámetros:
+    - df: DataFrame de entrada.
+    - target_col: Nombre de la columna objetivo.
+    - top_n: Cantidad de variables a retornar en el ranking.
+    - usar_absoluto: Si es True, ordena por la fuerza de la relación sin importar el signo.
+                     Si es False, conserva y ordena por valor real (+1 a -1).
+    - method: 'pearson', 'kendall' o 'spearman'.
     """
-    # Asegurar únicamente columnas numéricas
-    numeric_df = df.select_dtypes(include=[np.number])
+    if target_col not in df.columns:
+        raise ValueError(
+            f"La columna '{target_col}' no se encuentra en el DataFrame."
+        )
 
-    # Calcular matriz de correlación
-    corr_matrix = numeric_df.corr(method=method)
+    # 1. Separar la serie objetivo y las variables explicativas numéricas
+    target_series = df[target_col]
+    features_df = df.drop(columns=[target_col]).select_dtypes(
+        include="number"
+    )  # Asegura evaluar solo columnas numéricas
 
-    # Generar máscara para el triángulo superior y diagonal
-    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+    # 2. Calcular correlación directa con la columna objetivo
+    correlations = features_df.corrwith(target_series, method=method)
 
-    # Graficar Heatmap
-    plt.figure(figsize=figsize)
-    sns.heatmap(
-        corr_matrix,
-        mask=mask,
-        cmap=cmap,
-        vmax=1.0,
-        vmin=-1.0,
-        center=0.0,
-        annot=annot,
-        fmt=".2f",
-        square=True,
-        linewidths=0.5,
-        cbar_kws={"shrink": 0.8, "label": f"Correlación de {method.capitalize()}"},
-        annot_kws={"size": 8 if len(corr_matrix.columns) >= 20 else 10},
-    )
+    # 3. Formatear como DataFrame
+    res = correlations.reset_index()
+    res.columns = ["Variable", "Correlación"]
 
-    plot_title = (
-        title
-        if title
-        else f"Matriz de Correlación ({method.capitalize()})"
-    )
-    plt.title(plot_title, fontsize=14, weight="bold", pad=15)
-    plt.xticks(rotation=45, ha="right", fontsize=9)
-    plt.yticks(rotation=0, fontsize=9)
-    plt.tight_layout()
-    plt.show()
+    # 4. Ordenar según el criterio deseado
+    if usar_absoluto:
+        # Se ordena por magnitud conservando el signo original en la tabla
+        res = (
+            res.reindex(res["Correlación"].abs().sort_values(ascending=False).index)
+            .dropna()
+            .head(top_n)
+        )
+    else:
+        res = res.sort_values(
+            by="Correlación", ascending=False
+        ).dropna().head(top_n)
 
-    # Extraer ranking de pares con mayor correlación absoluta (sin duplicados ni diagonal)
-    pairs = (corr_matrix.where(~mask).stack().reset_index(name="correlation").rename(columns={"level_0": "feature_1", "level_1": "feature_2"})
-    )
-
-    pairs["abs_correlation"] = pairs["correlation"].abs()
-    top_pairs_df = (
-        pairs.sort_values(by="abs_correlation", ascending=False)
-        .drop(columns=["abs_correlation"])
-        .head(top_n_pairs)
-        .reset_index(drop=True)
-    )
-
-    return corr_matrix, top_pairs_df
+    return res.reset_index(drop=True)
 
 def pintar_violin_plots(
         df:pd.DataFrame,

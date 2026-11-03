@@ -13,9 +13,15 @@ from datetime import datetime
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import TimeSeriesSplit, cross_validate, GridSearchCV
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    log_loss,
+)
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 
 from src.transform import encontrar_columnas
@@ -44,7 +50,9 @@ def filtrar_pares_restantes(
     simbolos_restantes = [col for col in forex_cols if col != target]
 
     features_a_mantener = [
-        '_return_zscore_lag1'
+        '_return_zscore_lag1',
+        '_variance_lag1_log',
+        '_return_skew_lag1'
     ]
     cols_permitidas = {
         f"{s}{feat}"
@@ -205,152 +213,115 @@ def preprocesar_forex(
 
     return X_train, y_train, X_live, ultima_fecha     
 
-# Transformacion de variables: escalar en una ventana movil
-
-class RollingStandardScaler(BaseEstimator, TransformerMixin):
-
-    def __init__(self, window=20, min_periods=None, eps=1e-8):
-        self.window = window
-        self.min_periods = min_periods if min_periods else window
-        self.eps = eps
-
-    def fit(self, X, y=None):
-        # En series temporales online/rolling no hay parámetros fijos que "aprender" de un set estático
-        return self
-
-    def transform(self, X):
-        is_df = isinstance(X, pd.DataFrame)
-        df = X.copy() if is_df else pd.DataFrame(X)
-
-        # Calculamos sobre la ventana retrospectiva cerrada (shift 1)
-        r_mean = (
-            df.shift(1).rolling(window=self.window, min_periods=self.min_periods).mean()
-        )
-        r_std = (
-            df.shift(1).rolling(window=self.window, min_periods=self.min_periods).std()
-        )
-
-        scaled = (df - r_mean) / (r_std + self.eps)
-
-        return scaled if is_df else scaled.to_numpy()
-
 # Funciones de evaluacion
 
 def evaluar_modelo_cat(
     model,
     X,
     y,
-    cv_splits=5,
+    test_size=0.20,
     random_state=42,
     run_permutation_importance=False,
     class_names=None,
 ):
-    """Evalúa exhaustivamente un RandomForest multiclase mediante validación cruzada estratificada,
+    """Evalúa exhaustivamente un RandomForest multiclase mediante partición temporal
 
-    desglose de métricas por clase, matrices de confusión y análisis de
-    importancia de variables.
-
-    Parámetros:
-    -----------
-    model : estimator
-        Modelo RandomForestClassifier ya instanciado o preentrenado.
-    X : pd.DataFrame o np.ndarray
-        Matriz de características (features).
-    y : pd.Series o np.ndarray
-        Etiquetas de clase categóricas o multiclase.
-    cv_splits : int, default=5
-        Número de folds para la validación cruzada.
-        Semilla para reproducibilidad del particionado.
-    run_permutation_importance : bool, default=True
-        Calcula importancia por permutación sobre el conjunto completo.
-    class_names : list, optional
-        Nombres o etiquetas de las clases para reportes legibles.
-
-    Retorna:
-    --------
-    dict
-        Diccionario con métricas agregadas de CV, reporte por clase,
-        matriz de confusión y DataFrames de importancia de variables.
+    o secuencial (80% entrenamiento, 20% validación final), reporte por clase,
+    matrices de confusión y análisis de importancia de variables.
     """
     feature_names = (
         X.columns.tolist()
         if hasattr(X, "columns")
         else [f"feature_{i}" for i in range(X.shape[1])]
     )
+
+    # 1. Partición secuencial (80% train / 20% val preservando el orden temporal)
+    split_idx = int(len(X) * (1 - test_size))
+
+    if hasattr(X, "iloc"):
+        X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
+    else:
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+
+    # 2. Entrenamiento del estimador sobre la partición del 80%
+    model.fit(X_train, y_train)
+
     if class_names is None:
-        class_names = (
-            [str(cls) for cls in np.unique(y)]
-            if hasattr(model, "classes_") is False
-            else [str(cls) for cls in model.classes_]
-        )
+        class_names = [str(cls) for cls in model.classes_]
 
-    # Validación Cruzada: 5 particiones secuenciales 
-    tscv = TimeSeriesSplit(
-        n_splits=cv_splits
-    )
+    # Predicciones de validación y probabilidades
+    y_pred_val = model.predict(X_val)
+    y_pred_train = model.predict(X_train)
 
-    scoring = {
-        "accuracy": "accuracy",
-        "balanced_accuracy": "balanced_accuracy",
-        "f1_macro": "f1_macro",
-        "f1_weighted": "f1_weighted",
-        "log_loss": "neg_log_loss",
+    # Manejo de probabilidades para Log Loss
+    if hasattr(model, "predict_proba"):
+        y_proba_val = model.predict_proba(X_val)
+        val_log_loss = log_loss(y_val, y_proba_val, labels=model.classes_)
+    else:
+        val_log_loss = np.nan
+
+    # 3. Métricas equivalentes calculadas sobre el set de validación
+    train_acc = accuracy_score(y_train, y_pred_train)
+    val_acc = accuracy_score(y_val, y_pred_val)
+    val_balanced_acc = balanced_accuracy_score(y_val, y_pred_val)
+    val_f1_macro = f1_score(y_val, y_pred_val, average="macro")
+    val_f1_weighted = f1_score(y_val, y_pred_val, average="weighted")
+
+    validation_summary = {
+        "Val Accuracy": f"{val_acc:.4f}",
+        "Val Balanced Accuracy": f"{val_balanced_acc:.4f}",
+        "Val F1 (Macro)": f"{val_f1_macro:.4f}",
+        "Val F1 (Weighted)": f"{val_f1_weighted:.4f}",
+        "Val Log Loss": f"{val_log_loss:.4f}"
+        if not np.isnan(val_log_loss)
+        else "N/A",
+        "Train vs Val Accuracy Gap": f"{(train_acc - val_acc):.4f}",
     }
 
-    cv_results = cross_validate(
-        estimator=model,
-        X=X,
-        y=y,
-        cv=tscv,
-        scoring=scoring,
-        return_train_score=True,
-        n_jobs=-1,
-    )
-
-    # Resumen de métricas de CV (media ± desviación estándar)
-    cv_summary = {
-        "CV Accuracy": f"{cv_results['test_accuracy'].mean():.4f} (± {cv_results['test_accuracy'].std():.4f})",
-        "CV Balanced Accuracy": f"{cv_results['test_balanced_accuracy'].mean():.4f} (± {cv_results['test_balanced_accuracy'].std():.4f})",
-        "CV F1 (Macro)": f"{cv_results['test_f1_macro'].mean():.4f} (± {cv_results['test_f1_macro'].std():.4f})",
-        "CV F1 (Weighted)": f"{cv_results['test_f1_weighted'].mean():.4f} (± {cv_results['test_f1_weighted'].std():.4f})",
-        "CV Log Loss": f"{-cv_results['test_log_loss'].mean():.4f} (± {cv_results['test_log_loss'].std():.4f})",
-        "Train vs Test Accuracy Gap": f"{(cv_results['train_accuracy'].mean() - cv_results['test_accuracy'].mean()):.4f}",
+    raw_scores = {
+        "train_accuracy": train_acc,
+        "test_accuracy": val_acc,
+        "test_balanced_accuracy": val_balanced_acc,
+        "test_f1_macro": val_f1_macro,
+        "test_f1_weighted": val_f1_weighted,
+        "test_log_loss": val_log_loss,
     }
 
-    # Desempeño detallado y Matriz de Confusión
-    # Asegura ajuste sobre los datos pasados si el estimador requiere cómputos directos
-    #model.fit(X, y)
-    y_pred = model.predict(X)
-
-    # Reporte de clasificación estructurado por clase
+    # 4. Reporte por clase y matriz de confusión (evaluados sobre validación)
     cls_report_dict = classification_report(
-        y, y_pred, target_names=class_names, output_dict=True
+        y_val,
+        y_pred_val,
+        target_names=class_names,
+        labels=model.classes_,
+        output_dict=True,
     )
     df_cls_report = pd.DataFrame(cls_report_dict).transpose()
 
-    # Matriz de confusión normalizada (por filas / valores verdaderos)
-    cm_raw = confusion_matrix(y, y_pred)
-    cm_norm = confusion_matrix(y, y_pred, normalize="true")
+    cm_raw = confusion_matrix(y_val, y_pred_val, labels=model.classes_)
+    cm_norm = confusion_matrix(
+        y_val, y_pred_val, labels=model.classes_, normalize="true"
+    )
     df_cm = pd.DataFrame(
         cm_norm,
         index=[f"True: {c}" for c in class_names],
         columns=[f"Pred: {c}" for c in class_names],
     )
 
-    # Importancia de Variables (Feature Importance)
-    # MDI (Mean Decrease in Impurity) - nativo de RandomForest
+    # 5. Importancia de Variables (MDI)
     mdi_importances = model.feature_importances_
     df_importance = pd.DataFrame(
         {"feature": feature_names, "importance_mdi": mdi_importances}
     ).sort_values(by="importance_mdi", ascending=False)
 
-    # Permutation Feature Importance (más robusto frente a cardinalidad alta)
+    # 6. Permutation Feature Importance sobre el conjunto de validación
     df_perm_importance = None
     if run_permutation_importance:
         perm_result = permutation_importance(
             model,
-            X,
-            y,
+            X_val,
+            y_val,
             scoring="f1_macro",
             n_repeats=10,
             random_state=random_state,
@@ -364,15 +335,15 @@ def evaluar_modelo_cat(
             }
         ).sort_values(by="perm_importance_mean", ascending=False)
 
-    # Salida en consola
+    # Impresión de resultados
     print("=" * 60)
-    print("RESUMEN DE VALIDACIÓN CRUZADA")
+    print("RESUMEN DE VALIDACIÓN (80% TRAIN / 20% VAL)")
     print("=" * 60)
-    for metric, val in cv_summary.items():
+    for metric, val in validation_summary.items():
         print(f"{metric:<30}: {val}")
 
     print("\n" + "=" * 60)
-    print("REPORTE DE CLASIFICACIÓN DETALLADO (POR CLASE)")
+    print("REPORTE DE CLASIFICACIÓN DETALLADO (SOBRE VALIDACIÓN)")
     print("=" * 60)
     print(df_cls_report.round(4))
 
@@ -393,13 +364,20 @@ def evaluar_modelo_cat(
         print(df_perm_importance.head(20).to_string(index=False))
 
     return {
-        "cv_summary": cv_summary,
-        "cv_raw_results": cv_results,
+        "cv_summary": validation_summary,
+        "cv_raw_results": raw_scores,
         "classification_report": df_cls_report,
         "confusion_matrix_raw": cm_raw,
         "confusion_matrix_normalized": df_cm,
         "feature_importance_mdi": df_importance,
         "feature_importance_permutation": df_perm_importance,
+        "fitted_model": model,
+        "partitions": {
+            "X_train": X_train,
+            "X_val": X_val,
+            "y_train": y_train,
+            "y_val": y_val,
+        },
     }
 
 
@@ -525,7 +503,7 @@ def registrar_evaluacion_excel(
     print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
 
-def optimizar_hiperparametros(
+def optimizar_parametros(
         simbolo:str='EURUSD'
 ):
     tscv = TimeSeriesSplit(
@@ -534,20 +512,19 @@ def optimizar_hiperparametros(
 
     # Predictores a eliminar de los datasets train y live
     predictores_a_excluir = []
-    X_train, y_train, X_live, ultima_fecha = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
+    X_train, y_train, _, _ = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     print("Configurando GridSearchCV para {simbolo}")
     modelo_base = Pipeline(steps=[
-        ('scaler', RollingStandardScaler(window=20)),
         ('rf', RandomForestClassifier(random_state=42))
     ])
 
     param_grid = {
-        'rf__n_estimators': [450],
+        'rf__n_estimators': [400,450],
         'rf__max_depth': [4],
-        'rf__min_samples_leaf': [50],
+        'rf__min_samples_leaf': [33,36,39],
         'rf__min_samples_split': [4],
-        'rf__max_samples': [0.4],
+        'rf__max_samples': [0.45],
         'rf__max_features': [0.3],
         'rf__class_weight': ['balanced_subsample']
     }
@@ -579,7 +556,8 @@ Ejecucion desde el terminal:
 python -m src.modeling
 '''
 def main(
-        simbolo:str
+        simbolo:str,
+        evaluar:bool=False
 ):
     # Predictores a eliminar de los datasets train y live
     predictores_a_excluir = []
@@ -587,14 +565,13 @@ def main(
 
     # Inicializar modelo y entrenar
     pipe = Pipeline([
-        #('scaler', RollingStandardScaler(window=50)), 
         ('model', RandomForestClassifier(
             random_state=42,
-            n_estimators=450,
+            n_estimators=400,
             max_depth=4,
-            min_samples_leaf=50,
+            min_samples_leaf=33,
             min_samples_split= 4,
-            max_samples= 0.4,
+            max_samples= 0.45,
             max_features= 0.3,
             class_weight='balanced_subsample'            
         ))
@@ -609,20 +586,22 @@ def main(
     df_probabilidades = pd.DataFrame(y_pred_proba, columns=pipe.classes_)
 
     print(f"Entrenamiento modelo {simbolo} finalizado.")
+    print(f"Dimensiones del dataset de entrenamiento:", X_train.shape)
     print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
     print("Probabilidades:")
     print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
-    rf_model = pipe.named_steps['model']
-    dict_evaluacion = evaluar_modelo_cat(model=rf_model, X=X_train, y=y_train)
+    if evaluar:
+        rf_model = pipe.named_steps['model']
+        dict_evaluacion = evaluar_modelo_cat(model=rf_model, X=X_train, y=y_train)
 
-    registrar_evaluacion_excel(
-        dict_evaluacion=dict_evaluacion,
-        simbolo=simbolo,
-        ultima_fecha=ultima_fecha,
-        y_pred=y_pred
-    )
+        registrar_evaluacion_excel(
+            dict_evaluacion=dict_evaluacion,
+            simbolo=simbolo,
+            ultima_fecha=ultima_fecha,
+            y_pred=y_pred
+        )
 
 def entrypoint_modeling(argv: Sequence[str] | None = None):
     """Punto de entrada de línea de comandos."""
@@ -631,10 +610,15 @@ def entrypoint_modeling(argv: Sequence[str] | None = None):
     parser.add_argument(
         "--simbolo", type=str, default="EURUSD", help="Símbolo del activo"
     )
+    parser.add_argument(
+            "--evaluar",
+            action="store_true",
+            help="Ejecuta la evaluación del modelo tras el entrenamiento",
+        )
     args = parser.parse_args(argv)
     
     # Ejecuta la lógica central con los argumentos parseados
-    return main(simbolo=args.simbolo)
+    return main(simbolo=args.simbolo, evaluar=args.evaluar)
 
 if __name__ == '__main__':
     entrypoint_modeling()

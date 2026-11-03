@@ -66,46 +66,89 @@ def calcular_zscore(
     serie: pd.Series,
     periodo: int = 20,
     min_periodos: int | None = None,
-    asumir_media_cero: bool = False
+    asumir_media_cero: bool = False,
+    exponencial: bool = True
 ) -> pd.Series:
-    """Calcula el Z-score móvil de una serie temporal utilizando únicamente
+    """Normaliza la vela actual (t) utilizando los parámetros históricos
 
-    los N períodos previos (shift=1) para evitar lookahead bias.
-
-    Parámetros:
-    -----------
-    serie : pd.Series
-        Serie temporal a escalar (ej. retornos, spreads, volumen).
-    periodo : int, por defecto 20
-        Tamaño de la ventana móvil retrospectiva.
-    min_periodos : int | None, opcional
-        Número mínimo de observaciones requeridas para calcular la métrica.
-    asumir_media_cero : bool, por defecto False
-        Si es True, asume media = 0 (práctica estándar para retornos
-        financieros). Si es False, resta la media móvil histórica.
-    epsilon : float, por defecto 1e-8
-        Valor para evitar división por cero en desvíos nulos.
-
-    Retorna:
-    --------
-    pd.Series con los valores normalizados en unidades de desviación estándar.
+    calculados hasta la vela anterior (t-1).
     """
-    ventana_movil = serie.shift(1).rolling(
-        window=periodo, min_periods=min_periodos
-    )
+    # 1. Parámetros calculados estrictamente hasta t-1
+    if exponencial:
+        ventana = serie.shift(1).ewm(
+            span=periodo, min_periods=min_periodos, adjust=False
+        )
+    else:
+        ventana = serie.shift(1).rolling(
+            window=periodo, min_periods=min_periodos
+        )
 
-    desvio = ventana_movil.std()
+    desvio = ventana.std()
 
+    # 2. La serie en curso (t) se compara contra la distribución previa (t-1)
     if asumir_media_cero:
         zscore = serie / (desvio + EPSILON)
     else:
-        promedio = ventana_movil.mean()
+        promedio = ventana.mean()
         zscore = (serie - promedio) / (desvio + EPSILON)
 
     zscore.name = f"{serie.name}_zscore" if serie.name else "zscore"
     return zscore
 
-                                                                    
+
+def calcular_volatilidad_direccional(
+        retorno:pd.Series,
+        span:int=20
+)->pd.Series:
+    downside_sq = pd.Series(
+        np.where(retorno < 0, retorno**2, 0.0), index=retorno.index
+    )
+    upside_sq = pd.Series(
+        np.where(retorno > 0, retorno**2, 0.0), index=retorno.index
+    )
+    # Media móvil exponencial de los desvíos al cuadrado
+    ewma_down_sq = downside_sq.ewm(span=span, adjust=False).mean()
+    ewma_up_sq = upside_sq.ewm(span=span, adjust=False).mean()
+
+    vol_down = np.sqrt(ewma_down_sq)
+    vol_up = np.sqrt(ewma_up_sq)
+
+    ratio = vol_down / (vol_up + EPSILON)
+    return ratio
+
+
+def calcular_asimetria(
+    serie: pd.Series,
+    periodo: int = 50,
+    min_periodos: int | None = None,
+) -> pd.Series:
+    """Calcula la asimetría (skewness) móvil contemporánea de una serie temporal.
+
+    Parámetros:
+    -----------
+    serie : pd.Series
+        Serie temporal (ej. retornos logarítmicos, spreads, etc.).
+    periodo : int, por defecto 50
+        Tamaño de la ventana móvil retrospectiva.
+    min_periodos : int | None, opcional
+        Número mínimo de observaciones requeridas. Si es None, requiere
+        el período completo.
+
+    Retorna:
+    --------
+    pd.Series con el sesgo móvil de la serie.
+    """
+    if min_periodos is None:
+        min_periodos = periodo
+
+    asimetria = serie.rolling(
+        window=periodo, min_periods=min_periodos
+    ).skew()
+
+    asimetria.name = f"{serie.name}_skew" if serie.name else "skew"
+    return asimetria
+
+                                                                   
 def calcular_metricas_precios(
         df:pd.DataFrame,
         simbolos:list[str],
@@ -136,6 +179,12 @@ def calcular_metricas_precios(
         aceleracion = retorno.diff()
         df_out[varianza_col] = retorno.rolling(window=periodo_corto, min_periods=min_periodos).var()
 
+        # Con los retornos puros se calcula la volatilidad direccional
+        df_out[f"{simbolo}_vol_directional"] = calcular_volatilidad_direccional(retorno=retorno)
+
+        # Se calculan las asimetrias sobre las variables originales
+        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno)
+
         # Se escala el retorno por su z-score, asumiendo media cero
         df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno, asumir_media_cero=True)
         df_out[f"{simbolo}_acceleration_zscore"] = calcular_zscore(aceleracion)
@@ -147,10 +196,11 @@ def calcular_metricas_precios(
             diferencia_retornos = retorno - retorno_largo
             df_out[f"{simbolo}_ret_diff_zscore"] = calcular_zscore(diferencia_retornos)
 
-            # Lo mismo con Aceleraciones            
+            # Lo mismo con Aceleraciones           
             aceleracion_larga = retorno_largo.diff()
             diferencia_aceleraciones = aceleracion - aceleracion_larga
             df_out[f"{simbolo}_accel_diff_zscore"] = calcular_zscore(diferencia_aceleraciones)
+
 
             # Ratio de volatilidad: ratio entre desvio corto y largo 
             desvio_corto = retorno_largo.rolling(window=periodo_corto).std()          
@@ -198,7 +248,7 @@ def calcular_spread(
 
         # High - Low Spread escalado por z-score
         spread = calcular_pct_diff(df_out[columna_high], df_out[columna_low])
-        df_out[f"{simbolo}_spread_zscore"] = calcular_zscore(spread)        
+        df_out[f"{simbolo}_spread_zscore"] = calcular_zscore(spread)     
 
     return df_out
 
@@ -212,6 +262,9 @@ def calcular_metricas_intrasemanales(
         # Gap de apertura: diferencia entre apertura y cierre anterior
         open_gap = calcular_pct_diff(df_out[f"{simbolo}_Open"], df_out[f"{simbolo}_Close"], lag_base=1)
         df_out[f"{simbolo}_open_gap_zscore"] = calcular_zscore(open_gap)
+
+        # Asimetria del open gap
+        df_out[f"{simbolo}_open_gap_skew"] = calcular_asimetria(open_gap)
 
         # Diferencia entre el cierre y la apertura semanal (para construir target)
         df_out[f"{simbolo}_intra_weekly"] = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
@@ -295,7 +348,7 @@ def procesar_precios(
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
 
     # Se excluyen las variables intrasemanales
-    cols_gap = encontrar_columnas(columnas_relativas, "_Open_gap")
+    cols_gap = encontrar_columnas(columnas_relativas, "_open_gap")
     cols_intra = encontrar_columnas(columnas_relativas, "_intra_weekly")
     cols_exclude = set(cols_gap+cols_intra)
 
@@ -454,9 +507,10 @@ def main(
     
     # Transformaciones log
     columnas_var = encontrar_columnas(columnas_features, f"_variance_")
+    columnas_vol_directional = encontrar_columnas(columnas_features, f"_vol_directional_")
     
 
-    columnas_log = columnas_var + [
+    columnas_log = columnas_var + columnas_vol_directional + [
         "USDCAD_vol_ratio_lag1"
     ]
     df_transform = transformar_log(df_merged, cols=columnas_log)
@@ -464,8 +518,9 @@ def main(
     # Transformaciones yeo-johnson
     cols_gap = encontrar_columnas(columnas_features, f"_open_gap")
     cols_spread = encontrar_columnas(columnas_features, f"_spread_")
+    cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
 
-    columnas_yeo =  cols_gap + cols_spread + [
+    columnas_yeo = cols_gap + cols_spread + cols_volume + [
         "VIX_pct_chg_20d",
         "STLFSI_delta_20d"
         ]

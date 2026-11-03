@@ -20,7 +20,7 @@ def main():
     #extraer()
     #transformar()
     for pair in forex_cols:
-        modelar(simbolo=pair)
+        modelar(simbolo=pair, evaluar=True)
 
 
 if __name__ == '__main__':
