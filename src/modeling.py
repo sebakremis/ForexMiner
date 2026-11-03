@@ -35,7 +35,7 @@ def cargar_datos_clean()->pd.DataFrame:
         return pd.DataFrame()
 
 
-def remover_pares_restantes(
+def filtrar_pares_restantes(
         df:pd.DataFrame,
         target:str
 )->pd.DataFrame:
@@ -43,14 +43,24 @@ def remover_pares_restantes(
    
     simbolos_restantes = [col for col in forex_cols if col != target]
 
-    # Se eliminan datos de los simbolos forex restantes
-    cols_restantes = [
+    features_a_mantener = [
+        '_return_zscore_lag1'
+    ]
+    cols_permitidas = {
+        f"{s}{feat}"
+        for s in simbolos_restantes
+        for feat in features_a_mantener
+    }
+
+    # Se eliminan las demas columnas
+    cols_drop = [
         col
         for s in simbolos_restantes
         for col in encontrar_columnas(columnas_clean, s)
+        if col not in cols_permitidas
     ]
-    df = df.drop(columns=cols_restantes, errors='ignore')    
-    return df
+
+    return df.drop(columns=cols_drop, errors='ignore')
 
 # Funciones de pre-procesamiento
 
@@ -166,7 +176,7 @@ def preprocesar_forex(
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean()
-    df = remover_pares_restantes(df,par)
+    df = filtrar_pares_restantes(df,par)
 
     # Separar datos de entrenamiento y test  
     ultima_fecha = df.index.max()
@@ -174,7 +184,7 @@ def preprocesar_forex(
 
     # Se crea la variable categorica a partir del dataset de entrenamiento
     # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{par}_return"
+    objetivo = f"{par}_intra_weekly"
     objetivo_cat = f"{objetivo}_cat"
 
     df_train, tabla_bins = categorizar_en_cuantiles(
@@ -577,7 +587,7 @@ def main(
 
     # Inicializar modelo y entrenar
     pipe = Pipeline([
-        #('scaler', RollingStandardScaler(window=10)), 
+        #('scaler', RollingStandardScaler(window=50)), 
         ('model', RandomForestClassifier(
             random_state=42,
             n_estimators=450,

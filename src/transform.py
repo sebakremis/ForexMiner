@@ -15,7 +15,7 @@ from src.config import (carpeta_datos, activos_cols, forex_cols,
                         otros_activos_cols
                         )
 
-
+EPSILON = 1e-8
 
 # Manejo de datos
 
@@ -61,12 +61,56 @@ def calcular_pct_diff(
 
     return pct_diff
 
+
+def calcular_zscore(
+    serie: pd.Series,
+    periodo: int = 20,
+    min_periodos: int | None = None,
+    asumir_media_cero: bool = False
+) -> pd.Series:
+    """Calcula el Z-score móvil de una serie temporal utilizando únicamente
+
+    los N períodos previos (shift=1) para evitar lookahead bias.
+
+    Parámetros:
+    -----------
+    serie : pd.Series
+        Serie temporal a escalar (ej. retornos, spreads, volumen).
+    periodo : int, por defecto 20
+        Tamaño de la ventana móvil retrospectiva.
+    min_periodos : int | None, opcional
+        Número mínimo de observaciones requeridas para calcular la métrica.
+    asumir_media_cero : bool, por defecto False
+        Si es True, asume media = 0 (práctica estándar para retornos
+        financieros). Si es False, resta la media móvil histórica.
+    epsilon : float, por defecto 1e-8
+        Valor para evitar división por cero en desvíos nulos.
+
+    Retorna:
+    --------
+    pd.Series con los valores normalizados en unidades de desviación estándar.
+    """
+    ventana_movil = serie.shift(1).rolling(
+        window=periodo, min_periods=min_periodos
+    )
+
+    desvio = ventana_movil.std()
+
+    if asumir_media_cero:
+        zscore = serie / (desvio + EPSILON)
+    else:
+        promedio = ventana_movil.mean()
+        zscore = (serie - promedio) / (desvio + EPSILON)
+
+    zscore.name = f"{serie.name}_zscore" if serie.name else "zscore"
+    return zscore
+
                                                                     
-def calcular_metricas_close(
+def calcular_metricas_precios(
         df:pd.DataFrame,
         simbolos:list[str],
-        periodo_var:int=20,
-        periodo_retorno_largo:int | None = None,
+        periodo_corto:int=20,
+        periodo_largo:int | None = None,
         medias:list[int] | None = None,        
         periodo_rango:int | None = None,
         min_periodos:int | None = None
@@ -83,51 +127,57 @@ def calcular_metricas_close(
     '''
     df_out = df.copy()
     for simbolo in simbolos:
+        
         # Retornos, aceleraciones y Varianzas de los retornos
-        columna_close = f"{simbolo}_Close"
-        ret_col = f"{simbolo}_return"
-        acc_col = f"{simbolo}_acceleration"
-        var_col = f"{simbolo}_var_{periodo_var}"
-        df_out[ret_col] = df_out[columna_close].pct_change(fill_method=None)
-        df_out[acc_col] = df_out[ret_col].diff()
-        df_out[var_col] = df_out[ret_col].rolling(window=periodo_var, min_periods=min_periodos).var()
+        columna_precio = f"{simbolo}_Close"
+        varianza_col = f"{simbolo}_variance"
 
-        if periodo_retorno_largo:
+        retorno = df_out[columna_precio].pct_change(fill_method=None)               
+        aceleracion = retorno.diff()
+        df_out[varianza_col] = retorno.rolling(window=periodo_corto, min_periods=min_periodos).var()
 
-            # Retorno: diferencia entre retorno corto y largo           
-            retorno_largo = df_out[columna_close].pct_change(periodo_retorno_largo,fill_method=None)
-            df_out[f"{simbolo}_return_diff"] = df_out[ret_col] - retorno_largo
+        # Se escala el retorno por su z-score, asumiendo media cero
+        df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno, asumir_media_cero=True)
+        df_out[f"{simbolo}_acceleration_zscore"] = calcular_zscore(aceleracion)
+
+        if periodo_largo:
+
+            # Retorno: diferencia entre retorno corto y largo escalado           
+            retorno_largo = df_out[columna_precio].pct_change(periodo_largo,fill_method=None)
+            diferencia_retornos = retorno - retorno_largo
+            df_out[f"{simbolo}_ret_diff_zscore"] = calcular_zscore(diferencia_retornos)
 
             # Lo mismo con Aceleraciones            
             aceleracion_larga = retorno_largo.diff()
-            df_out[f"{simbolo}_acceleration_diff"] = df_out[acc_col] - aceleracion_larga
+            diferencia_aceleraciones = aceleracion - aceleracion_larga
+            df_out[f"{simbolo}_accel_diff_zscore"] = calcular_zscore(diferencia_aceleraciones)
 
-            # Varianzas: ratio entre varianza corta y larga           
-            varianza_larga = retorno_largo.rolling(window=periodo_var, min_periods=min_periodos).var()
-            epsilon = 1e-8
-            df_out[f"{simbolo}_var_ratio"] = df_out[var_col] / (varianza_larga+epsilon)
+            # Ratio de volatilidad: ratio entre desvio corto y largo 
+            desvio_corto = retorno_largo.rolling(window=periodo_corto).std()          
+            desvio_largo = retorno_largo.rolling(window=periodo_largo).std()           
+            df_out[f"{simbolo}_vol_ratio"] = (desvio_corto + EPSILON) / (desvio_largo + EPSILON)
 
         # Range position
         if periodo_rango:
             # Se calculan maximos y minimos
-            maximo = (df_out[columna_close]
+            maximo = (df_out[columna_precio]
                                 .rolling(window=periodo_rango, min_periods=min_periodos)
                                 .max()
                                 )
-            minimo = (df_out[columna_close]
+            minimo = (df_out[columna_precio]
                                 .rolling(window=periodo_rango, min_periods=min_periodos)
                                 .min()
                                 )
 
             # Se calcula la posicion dentro del rango [-1 (Close igual al Minimo), 1 (Close igual al Maximo)]
-            df_out[f"{simbolo}_range{periodo_rango}_position"] = ((df_out[columna_close] - minimo) - (maximo - df_out[columna_close])) / (maximo-minimo)
+            df_out[f"{simbolo}_range{periodo_rango}_position"] = ((df_out[columna_precio] - minimo) - (maximo - df_out[columna_precio])) / (maximo-minimo)
               
         # Medias moviles
         if medias:
             periodo_sma_corta = medias[0]
             periodo_sma_larga = medias[1]
-            sma_corta = df_out[columna_close].rolling(window=periodo_sma_corta, min_periods=min_periodos).mean()
-            sma_larga = df_out[columna_close].rolling(window=periodo_sma_larga, min_periods=min_periodos).mean()
+            sma_corta = df_out[columna_precio].rolling(window=periodo_sma_corta, min_periods=min_periodos).mean()
+            sma_larga = df_out[columna_precio].rolling(window=periodo_sma_larga, min_periods=min_periodos).mean()
 
             # Diferencia porcentual entre medias
             df_out[f"{simbolo}_sma{periodo_sma_corta}_pct_diff_sma{periodo_sma_larga}"] = calcular_pct_diff(
@@ -137,52 +187,34 @@ def calcular_metricas_close(
     return df_out
 
 
-def calcular_metricas_volumen(
-        df:pd.DataFrame,
-        cols:list[str],
-        periodo:int=20,
-        min_periodos:int | None = None
-)->pd.DataFrame:
-    df_out = df.copy()
-    for col in cols:
-        # Calcular media movil del volumen
-        df_out[f"{col}_sma{periodo}"] = df_out[col].rolling(window=periodo, min_periods=min_periodos).mean()
-
-        # Se expresa el volumen relativo a su promedio (lag base=1)
-        df_out[f"{col}_pct_diff_sma{periodo}"] = calcular_pct_diff(df_out[col], df_out[f"{col}_sma{periodo}"], lag_base=1)
-
-        # Se elimina la columna del volumen promedio absoluto
-        df_out.drop(f"{col}_sma{periodo}", axis=1, inplace=True)
-
-    return df_out
-
-
-def calcular_metricas_high_low(
+def calcular_spread(
         df:pd.DataFrame,
         simbolos:list[str]
 )->pd.DataFrame:
     df_out = df.copy()
     for simbolo in simbolos:
-        columna_close = f"{simbolo}_Close"
         columna_high = f"{simbolo}_High"
         columna_low = f"{simbolo}_Low"
-        # High - Low Spread
-        df_out[f"{simbolo}_High_Low_spread"] = calcular_pct_diff(df_out[columna_high], df_out[columna_low])
 
-        # Posicion del cierre semanal respecto del rango [Low, High]
-        df_out[f"{simbolo}_Close_position"] = ((df[columna_close]-df[columna_low])-(df[columna_high]-df[columna_close])) / (df[columna_high]-df[columna_low])
+        # High - Low Spread escalado por z-score
+        spread = calcular_pct_diff(df_out[columna_high], df_out[columna_low])
+        df_out[f"{simbolo}_spread_zscore"] = calcular_zscore(spread)        
 
     return df_out
 
 
-def calcular_metricas_open(
+def calcular_metricas_intrasemanales(
         df:pd.DataFrame,
         simbolos:list[str]
 )->pd.DataFrame:
     df_out = df.copy()
     for simbolo in simbolos:
-        # Diferencia entre la apertura y el cierre anterior
-        df_out[f"{simbolo}_Open_pct_diff_last_Close"] = calcular_pct_diff(df_out[f"{simbolo}_Open"], df_out[f"{simbolo}_Close"], lag_base=1)
+        # Gap de apertura: diferencia entre apertura y cierre anterior
+        open_gap = calcular_pct_diff(df_out[f"{simbolo}_Open"], df_out[f"{simbolo}_Close"], lag_base=1)
+        df_out[f"{simbolo}_open_gap_zscore"] = calcular_zscore(open_gap)
+
+        # Diferencia entre el cierre y la apertura semanal (para construir target)
+        df_out[f"{simbolo}_intra_weekly"] = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
 
     return df_out
 
@@ -220,62 +252,60 @@ def procesar_precios(
     df_precios = cargar_datos_raw(nombre_fichero="precios")
     columnas_originales = df_precios.columns.tolist()
 
-    # Metricas sobre precios Close: forex
+    # Metricas sobre precios: forex
 
-    df_precios = calcular_metricas_close(
+    df_precios = calcular_metricas_precios(
         df=df_precios, 
         simbolos=forex_cols,
-        periodo_retorno_largo=12,
-        medias=[15,50],
+        periodo_largo=12,
+        medias=[15,50], # [media corta, media larga]
         periodo_rango=10
         )
 
     # Otros activos: sin calcular medias ni extremos
-    df_precios = calcular_metricas_close(
+    df_precios = calcular_metricas_precios(
         df=df_precios, 
         simbolos=otros_activos_cols
         )
 
-    # Metricas sobre Volumen
+    # Metricas sobre Volumen: zscore
     columnas_volumen = encontrar_columnas(
         columnas_target=columnas_originales,
         cadena="Volume"
     )
-    df_precios = calcular_metricas_volumen(df=df_precios, cols=columnas_volumen)
+    df_volumen_zscore = df_precios[columnas_volumen].apply(calcular_zscore)
+    df_volumen_zscore.columns = [f"{col}_zscore" for col in df_volumen_zscore.columns]
 
     # Metricas sobre precios extremos High - Low para pares forex
-    df_precios = calcular_metricas_high_low(df=df_precios, simbolos=forex_cols)
+    df_precios = calcular_spread(df=df_precios, simbolos=forex_cols)
 
-    # Metricas sobre precios open: todos los activos
-    df_precios = calcular_metricas_open(df=df_precios, simbolos=activos_cols)   
+
+
+    # Metricas intrasemanales: Rendimiento semanal entre precios Close y Open (target continuo)
+    df_precios = calcular_metricas_intrasemanales(df=df_precios, simbolos=forex_cols)   
 
     # Eliminar columnas originales (absolutas)
     df_precios.drop(columns=columnas_originales, inplace=True)
 
+    df_features = pd.concat([df_precios,df_volumen_zscore], axis=1)
+
     # Columnas restantes: relativas
-    columnas_relativas = df_precios.columns.tolist()
+    columnas_relativas = df_features.columns.tolist()
 
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
-    # Lag sobre retornos Forex: sin eliminar el original para usar como labels
-    retornos_forex = []
-    for major in forex_cols:
-        col_retorno_forex = encontrar_columnas(columnas_relativas, f"{major}_return")[0]
-        retornos_forex.append(col_retorno_forex)
 
-    df_precios = aplicar_lag(df=df_precios, columnas=retornos_forex, quitar_original=False)
-
-    # Variables lag: se excluyen los retornos forex que ya se calcularon, y las columnas
-    # Open_pct_diff_last_Close que no llevan lag
-    columnas_diff_open = encontrar_columnas(columnas_relativas, f"Open_pct_diff_last_Close")
-    excluir = set(retornos_forex+columnas_diff_open)
+    # Se excluyen las variables intrasemanales
+    cols_gap = encontrar_columnas(columnas_relativas, "_Open_gap")
+    cols_intra = encontrar_columnas(columnas_relativas, "_intra_weekly")
+    cols_exclude = set(cols_gap+cols_intra)
 
     # Resto de las columnas: se aplica el lag y se eliminan las originales
-    variables_restantes = [col for col in columnas_relativas if col not in excluir]
+    variables_restantes = [col for col in columnas_relativas if col not in cols_exclude]
 
-    df_precios = aplicar_lag(df=df_precios, columnas=variables_restantes, quitar_original=True)    
+    df_features = aplicar_lag(df=df_features, columnas=variables_restantes, quitar_original=True)    
 
 
-    return df_precios
+    return df_features
 
 
 def procesar_datos_macro() -> pd.DataFrame:
@@ -423,20 +453,19 @@ def main(
     columnas_features = df_merged.columns.tolist()
     
     # Transformaciones log
-    columnas_spread = encontrar_columnas(columnas_features, "High_Low_spread")
-    columnas_var = encontrar_columnas(columnas_features, f"_var_")
+    columnas_var = encontrar_columnas(columnas_features, f"_variance_")
     
 
-    columnas_log = columnas_spread + columnas_var
+    columnas_log = columnas_var + [
+        "USDCAD_vol_ratio_lag1"
+    ]
     df_transform = transformar_log(df_merged, cols=columnas_log)
 
     # Transformaciones yeo-johnson
-    columnas_volume_pct_diff = encontrar_columnas(columnas_features, "Volume_pct_diff_sma")
-    columnas_open_pct_diff = encontrar_columnas(columnas_features, f"Open_pct_diff_last_Close")
+    cols_gap = encontrar_columnas(columnas_features, f"_open_gap")
+    cols_spread = encontrar_columnas(columnas_features, f"_spread_")
 
-    columnas_yeo =  columnas_volume_pct_diff + columnas_open_pct_diff +[
-        "USDCAD_return_lag1",
-        "USDCAD_acceleration_lag1",
+    columnas_yeo =  cols_gap + cols_spread + [
         "VIX_pct_chg_20d",
         "STLFSI_delta_20d"
         ]
