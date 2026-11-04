@@ -364,8 +364,8 @@ def evaluar_modelo_cat(
         print(df_perm_importance.head(20).to_string(index=False))
 
     return {
-        "cv_summary": validation_summary,
-        "cv_raw_results": raw_scores,
+        "validation_summary": validation_summary,
+        "validation_raw_results": raw_scores,
         "classification_report": df_cls_report,
         "confusion_matrix_raw": cm_raw,
         "confusion_matrix_normalized": df_cm,
@@ -398,7 +398,7 @@ def registrar_evaluacion_excel(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. Aplanar métricas de validación cruzada y metadatos (Fila única)
-    cv_summary = dict_evaluacion.get("cv_summary", {})
+    val_summary = dict_evaluacion.get("validation_summary", {})
     fila_resumen = {
         "run_id": run_id,
         "timestamp_registro": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -407,12 +407,12 @@ def registrar_evaluacion_excel(
         "ultima_fecha": str(ultima_fecha),
         "y_pred": str(y_pred),
         # Métricas escalares agregadas
-        "cv_accuracy": cv_summary.get("CV Accuracy", np.nan),
-        "cv_balanced_acc": cv_summary.get("CV Balanced Accuracy", np.nan),
-        "cv_f1_macro": cv_summary.get("CV F1 (Macro)", np.nan),
-        "cv_f1_weighted": cv_summary.get("CV F1 (Weighted)", np.nan),
-        "cv_log_loss": cv_summary.get("CV Log Loss", np.nan),
-        "train_test_gap": cv_summary.get("Train vs Test Accuracy Gap", np.nan),
+        "val_accuracy": val_summary.get("Val Accuracy", np.nan),
+        "val_balanced_acc": val_summary.get("Val Balanced Accuracy", np.nan),
+        "val_f1_macro": val_summary.get("Val F1 (Macro)", np.nan),
+        "val_f1_weighted": val_summary.get("Val F1 (Weighted)", np.nan),
+        "val_log_loss": val_summary.get("Val Log Loss", np.nan),
+        "train_test_gap": val_summary.get("Train vs Val Accuracy Gap", np.nan),
     }
     df_nueva_fila = pd.DataFrame([fila_resumen])
 
@@ -548,6 +548,16 @@ def optimizar_parametros(
     print("Mejores hiperparámetros encontrados:")
     print(grid_search.best_params_)
 
+# Predictores a excluir segun el par forex
+excluir_dict = {
+    'EURUSD' : [],
+    'GBPUSD' : [], 
+    'AUDUSD' : ['Oil_vol_directional_lag1_log'], 
+    'USDCAD' : ['USDCHF_variance_lag1_log'],  
+    'USDCHF' : [], 
+    'USDJPY' : []
+}
+
 
 '''
 Bloque principal
@@ -560,7 +570,8 @@ def main(
         evaluar:bool=False
 ):
     # Predictores a eliminar de los datasets train y live
-    predictores_a_excluir = []
+    predictores_a_excluir = excluir_dict.get(simbolo,[])
+
     X_train, y_train, X_live, ultima_fecha = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     # Inicializar modelo y entrenar

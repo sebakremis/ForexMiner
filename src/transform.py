@@ -182,12 +182,12 @@ def calcular_metricas_precios(
         # Con los retornos puros se calcula la volatilidad direccional
         df_out[f"{simbolo}_vol_directional"] = calcular_volatilidad_direccional(retorno=retorno)
 
-        # Se calculan las asimetrias sobre las variables originales
-        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno)
-
         # Se escala el retorno por su z-score, asumiendo media cero
         df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno, asumir_media_cero=True)
         df_out[f"{simbolo}_acceleration_zscore"] = calcular_zscore(aceleracion)
+
+        # Se calcula la asimetria sobre los retornos
+        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno)
 
         if periodo_largo:
 
@@ -264,7 +264,7 @@ def calcular_metricas_intrasemanales(
         df_out[f"{simbolo}_open_gap_zscore"] = calcular_zscore(open_gap)
 
         # Asimetria del open gap
-        df_out[f"{simbolo}_open_gap_skew"] = calcular_asimetria(open_gap)
+        df_out[f"{simbolo}_gap_skew"] = calcular_asimetria(df_out[f"{simbolo}_open_gap_zscore"])
 
         # Diferencia entre el cierre y la apertura semanal (para construir target)
         df_out[f"{simbolo}_intra_weekly"] = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
@@ -369,47 +369,47 @@ def procesar_datos_macro() -> pd.DataFrame:
     df_macro.index = pd.to_datetime(df_macro.index)
     df_macro = df_macro.sort_index()
 
-    # Cálculo de variaciones (20 días hábiles de mercado)
-    periodo = 20
+    # Cálculo de variaciones (días hábiles de mercado)
+    periodo = 50
 
     # Variables de nivel (variación porcentual)
-    df_macro["VIX_pct_chg_20d"] = df_macro["VIX_index"].pct_change(
+    df_macro["VIX_pct_chg"] = df_macro["VIX_index"].pct_change(
         periods=periodo, fill_method=None
     )
-    df_macro["DXY_pct_chg_20d"] = df_macro["DXY_broad_goods"].pct_change(
+    df_macro["DXY_pct_chg"] = df_macro["DXY_broad_goods"].pct_change(
         periods=periodo, fill_method=None
     )
 
     # Variables expresadas en tasas/spreads (variación absoluta delta)
-    df_macro["Real_yield_delta_20d"] = df_macro["Real_yield_10y"].diff(
+    df_macro["Real_yield_delta"] = df_macro["Real_yield_10y"].diff(
         periods=periodo
     )
-    df_macro["STLFSI_delta_20d"] = df_macro["St_louis_financial_stress"].diff(
+    df_macro["STLFSI_delta"] = df_macro["St_louis_financial_stress"].diff(
         periods=periodo
     )
 
     # Se conserva VIX en nivel como predictor
     df_features_daily = pd.DataFrame(index=df_macro.index)
     df_features_daily["VIX_level"] = df_macro["VIX_index"]
-    df_features_daily["VIX_pct_chg_20d"] = df_macro["VIX_pct_chg_20d"]
-    df_features_daily["DXY_pct_chg_20d"] = df_macro["DXY_pct_chg_20d"]
-    df_features_daily["Real_yield_delta_20d"] = df_macro["Real_yield_delta_20d"]
-    df_features_daily["STLFSI_delta_20d"] = df_macro["STLFSI_delta_20d"]
+    df_features_daily[f"VIX_pct_chg_{periodo}d"] = df_macro["VIX_pct_chg"]
+    df_features_daily[f"DXY_pct_chg_{periodo}d"] = df_macro["DXY_pct_chg"]
+    df_features_daily[f"Real_yield_delta_{periodo}d"] = df_macro["Real_yield_delta"]
+    df_features_daily[f"STLFSI_delta_{periodo}d"] = df_macro["STLFSI_delta"]
 
     # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
     # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
-    cols_lag_1d = ["VIX_level", "VIX_pct_chg_20d", "Real_yield_delta_20d"]
+    cols_lag_1d = ["VIX_level", f"VIX_pct_chg_{periodo}d", f"Real_yield_delta_{periodo}d"]
     df_features_daily[cols_lag_1d] = df_features_daily[cols_lag_1d].shift(1)
 
     # DXY Broad: 2 días hábiles de rezago
-    df_features_daily["DXY_pct_chg_20d"] = df_features_daily[
-        "DXY_pct_chg_20d"
+    df_features_daily[f"DXY_pct_chg_{periodo}d"] = df_features_daily[
+        f"DXY_pct_chg_{periodo}d"
     ].shift(2)
 
     # STLFSI4: Se calcula al viernes T, pero la Fed lo publica el JUEVES T+1.
     # Entre el viernes y el jueves hábil transcurren 4 días hábiles (Lun, Mar, Mié, Jue).
-    df_features_daily["STLFSI_delta_20d"] = df_features_daily[
-        "STLFSI_delta_20d"
+    df_features_daily[f"STLFSI_delta_{periodo}d"] = df_features_daily[
+        f"STLFSI_delta_{periodo}d"
     ].shift(4)
 
     # Resampleo semanal estándar sobre los datos históricos observados
@@ -433,7 +433,13 @@ def procesar_datos_macro() -> pd.DataFrame:
         df_weekly_features.loc[lunes_actual] = df_weekly.iloc[-1]
 
     # Descartar las primeras filas con NaNs debidas a los cálculos iniciales
-    return df_weekly_features.dropna(how="all")
+    #df_weekly_features = df_weekly_features.dropna(how="all")
+
+    # Feature engineering sobre variables macro
+    #df_weekly_features["VIX_level_skew"] = calcular_asimetria(df_weekly_features["VIX_level"])
+
+
+    return df_weekly_features
 
 
 # Transformaciones
@@ -521,8 +527,7 @@ def main(
     cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
 
     columnas_yeo = cols_gap + cols_spread + cols_volume + [
-        "VIX_pct_chg_20d",
-        "STLFSI_delta_20d"
+        'VIX_pct_chg_50d'
         ]
     df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
 
