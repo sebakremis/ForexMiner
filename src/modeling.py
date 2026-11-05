@@ -51,8 +51,10 @@ def filtrar_pares_restantes(
 
     features_a_mantener = [
         '_return_zscore_lag1',
-        '_variance_lag1_log',
-        '_return_skew_lag1'
+        '_std_lag1_log',
+        '_return_skew_lag1',
+        '_gap_skew_lag1',
+
     ]
     cols_permitidas = {
         f"{s}{feat}"
@@ -72,24 +74,24 @@ def filtrar_pares_restantes(
 
 # Funciones de pre-procesamiento
 
-def separar_datos_live(
+def separar_train_test(
         df:pd.DataFrame,
         fecha:datetime
 )->tuple[pd.DataFrame, pd.DataFrame]:
     '''
-    Divide el DataFrame en conjuntos de entrenamiento y prueba basándose en la fecha más reciente.
+    Divide el DataFrame en conjuntos de entrenamiento y prueba basándose en la fecha de corte.
     '''
     df_train = df[df.index < fecha]
-    df_live = df[df.index == fecha].copy()
+    df_test = df[df.index >= fecha].copy()
 
-    return df_train, df_live
+    return df_train, df_test
     
 
 def categorizar_en_cuantiles(
-    df: pd.DataFrame,
+    df_train: pd.DataFrame,
     columna: str,
-    num_cuantiles: int = 5,
-    quitar_original: bool = True,
+    num_cuantiles: int = 3,
+    quitar_original: bool = False,
 ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
     """Transforma una columna continua en cuantiles globales.
 
@@ -104,7 +106,7 @@ def categorizar_en_cuantiles(
       límites inferiores y superiores de cada cuantil generado. Si no fue posible
       calcular los cuantiles, df_bins será None.
     """
-    df_out = df.copy()
+    df_out = df_train.copy()
     nueva_columna = f"{columna}_cat"
 
     serie = df_out[columna]
@@ -152,19 +154,16 @@ def categorizar_en_cuantiles(
     return df_out, df_bins
 
 
-def split_train_live(
+def separar_predictores_y_objetivo(
     df_train: pd.DataFrame,
-    df_live: pd.DataFrame,
+    df_test: pd.DataFrame,
     col_target:str, 
-    cols_excluded: list[str]
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    cols_excluded: list[str],
+    flag_evaluacion:bool
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
     '''
-    
-    Tramifica la variable continua objetivo en clases. Es necesario hacerlo luego de separar los 
-    datos de la ultima fecha para evitar data leakage al calcular las clases.
-    '''
-    df_live.loc[:, col_target] = np.nan # se asigna a nan para evitar error al eliminar columnas
 
+    '''
     # Columnas a descartar de predictores
     cols_excluded.extend([col_target])
     columnas_a_descartar = set(cols_excluded)
@@ -172,23 +171,160 @@ def split_train_live(
 
     X_train = df_train.drop(columns=cols_drop)
     y_train = df_train[col_target]
+
+    if flag_evaluacion:
+        y_test = df_test[col_target]
+        
+    else:
+        y_test=pd.Series() # serie vacia
+        # se asigna a nan para evitar error al eliminar columnas
+        df_test.loc[:, col_target] = np.nan 
     
-    X_live = df_live.drop(columns=cols_drop)
+    X_test = df_test.drop(columns=cols_drop)
 
-    return X_train, y_train, X_live
+    return X_train, y_train, X_test, y_test
 
 
-def preprocesar_forex(
+def preprocesar_entrenamiento(
         par:str,
         variables_a_excluir:list[str]
-)->tuple[pd.DataFrame, pd.Series, pd.DataFrame, datetime]:
+)->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean()
     df = filtrar_pares_restantes(df,par)
 
-    # Separar datos de entrenamiento y test  
+    # Separar datos de entrenamiento y datos live
     ultima_fecha = df.index.max()
-    df_train, df_live = separar_datos_live(df=df, fecha=ultima_fecha)
+    df_train, df_live = separar_train_test(df=df, fecha=ultima_fecha)
+
+    # Se crea la variable categorica a partir del dataset de entrenamiento
+    # Variable objetivo: se crea variable categorica por cuantiles
+    objetivo = f"{par}_intra_weekly"
+    objetivo_cat = f"{objetivo}_cat"
+
+    df_train, tabla_bins = categorizar_en_cuantiles(
+        df_train=df_train, 
+        columna=objetivo, 
+        num_cuantiles=3, 
+        quitar_original=False
+        )
+   
+    print(f"\n--- Rangos por Categoría para el ticker {par} ---")
+    print(tabla_bins)
+
+    # Separar predictores y variable objetivo
+    variables_a_excluir.extend([objetivo])
+
+
+    X_train, y_train, X_live, _ = separar_predictores_y_objetivo(
+        df_train=df_train, 
+        df_test=df_live, 
+        col_target=objetivo_cat,
+        cols_excluded=variables_a_excluir,
+        flag_evaluacion=False
+        )
+
+    return X_train, y_train, X_live, pd.Series(), ultima_fecha     
+
+# Funciones de evaluacion
+
+def categorizar_con_bins(
+    df: pd.DataFrame,
+    columna_target: str,
+    df_bins: pd.DataFrame | None = None,
+    extender_extremos: bool = True,
+    nombre_col_salida: str | None = None,
+) -> pd.DataFrame:
+    """Categoriza una columna en un DataFrame utilizando los límites precalculados en df_bins.
+
+    Parámetros
+    ----------
+    df : pd.DataFrame
+        DataFrame a procesar.
+    columna_target : str
+        Nombre de la columna numérica a categorizar.
+    df_bins : pd.DataFrame
+        DataFrame con columnas ['categoria', 'lim_inferior', 'lim_superior'].
+    extender_extremos : bool, default True
+        Si es True, reemplaza el límite inferior mínimo por -inf y el superior
+        máximo por inf, evitando que valores fuera del rango original queden
+        como NaN.
+    nombre_col_salida : str, optional
+        Nombre de la nueva columna con las categorías. Por defecto será
+        '{columna_target}_cat'.
+
+    Retorna
+    -------
+    pd.DataFrame
+        Copia del DataFrame con la nueva columna categorizada.
+    """
+    if columna_target not in df.columns:
+        raise KeyError(
+            f"La columna '{columna_target}' no está presente en el DataFrame."
+        )
+
+    if df_bins is None:
+        raise KeyError(
+                    "Falta la tabla de bins."
+                )
+
+    # Validar que df_bins tenga la estructura requerida y no esté vacío
+    columnas_requeridas = {"categoria", "lim_inferior", "lim_superior"}
+    if not columnas_requeridas.issubset(df_bins.columns):
+        raise ValueError(
+            f"df_bins debe contener las columnas: {columnas_requeridas}"
+        )
+
+    df_out = df.copy()
+    col_out = nombre_col_salida or f"{columna_target}_cat"
+
+    if df_bins.empty:
+        df_out[col_out] = np.nan
+        return df_out
+
+    # Ordenar por categoría para garantizar la secuencia monótona de cortes
+    bins_sorted = df_bins.sort_values("categoria").reset_index(drop=True)
+
+    # Reconstruir el array continuo de bordes: [lim_inf_0, lim_sup_0, lim_sup_1, ...]
+    cortes = np.concatenate(
+        ([bins_sorted["lim_inferior"].iloc[0]], bins_sorted["lim_superior"].values)
+    )
+    etiquetas = bins_sorted["categoria"].tolist()
+
+    if extender_extremos:
+        cortes[0] = -np.inf
+        cortes[-1] = np.inf
+
+    # pd.cut asigna según los intervalos predefinidos
+    # include_lowest=True asegura que el límite inferior del primer bin sea cerrado (análogo a qcut)
+    df_out[col_out] = pd.cut(
+        df_out[columna_target],
+        bins=cortes,
+        labels=etiquetas,
+        include_lowest=True,
+    )
+
+    return df_out
+
+def preprocesar_evaluacion(
+        par:str,
+        variables_a_excluir:list[str],
+        test_size:float=0.2
+)->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
+    # Cargar fichero de precios
+    df = cargar_datos_clean()
+    df = filtrar_pares_restantes(df,par)
+
+    # Primero se remueven los datos live (ultima fecha contemporanea)
+    ultima_fecha = df.index.max()
+    df_train, _ = separar_train_test(df=df, fecha=ultima_fecha)
+
+    # Luego de remover los datos live, se separan los datos de train y validacion
+    split_idx = int(len(df_train) * (1 - test_size))
+    fecha_corte = df_train.index[split_idx]
+
+    df_train, df_test = separar_train_test(df=df_train, fecha=fecha_corte)
+    print("Generando los datos para la evaluación.")
 
     # Se crea la variable categorica a partir del dataset de entrenamiento
     # Variable objetivo: se crea variable categorica por cuantiles
@@ -201,51 +337,50 @@ def preprocesar_forex(
         num_cuantiles=3, 
         quitar_original=False
         )
-
-    
     print(f"\n--- Rangos por Categoría para el ticker {par} ---")
     print(tabla_bins)
 
+    # Categorizar la variable objetivo en df_test con los mismos limites (extendidos a -inf / +inf)
+    df_test = categorizar_con_bins(
+        df=df_test,
+        columna_target=objetivo,
+        df_bins=tabla_bins
+    )
+    
     # Separar predictores y variable objetivo
     variables_a_excluir.extend([objetivo])
 
-    X_train, y_train, X_live = split_train_live(df_train=df_train, df_live=df_live, col_target=objetivo_cat,cols_excluded=variables_a_excluir)
+    X_train, y_train, X_test, y_test = separar_predictores_y_objetivo(
+            df_train=df_train, 
+            df_test=df_test, 
+            col_target=objetivo_cat,
+            cols_excluded=variables_a_excluir,
+            flag_evaluacion=True
+            )
+    
+    return X_train, y_train, X_test, y_test, fecha_corte
 
-    return X_train, y_train, X_live, ultima_fecha     
-
-# Funciones de evaluacion
 
 def evaluar_modelo_cat(
     model,
-    X,
-    y,
-    test_size=0.20,
+    X_train,
+    y_train,
+    X_val,
+    y_val,
     random_state=42,
     run_permutation_importance=False,
     class_names=None,
 ):
-    """Evalúa exhaustivamente un RandomForest multiclase mediante partición temporal
-
-    o secuencial (80% entrenamiento, 20% validación final), reporte por clase,
-    matrices de confusión y análisis de importancia de variables.
+    """Evalúa un RandomForest multiclase a partir de datos con particion temporal.
+    Reporte por clase, matrices de confusión y análisis de importancia de variables.
     """
     feature_names = (
-        X.columns.tolist()
-        if hasattr(X, "columns")
-        else [f"feature_{i}" for i in range(X.shape[1])]
+        X_train.columns.tolist()
+        if hasattr(X_train, "columns")
+        else [f"feature_{i}" for i in range(X_train.shape[1])]
     )
 
-    # 1. Partición secuencial (80% train / 20% val preservando el orden temporal)
-    split_idx = int(len(X) * (1 - test_size))
-
-    if hasattr(X, "iloc"):
-        X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
-    else:
-        X_train, X_val = X[:split_idx], X[split_idx:]
-        y_train, y_val = y[:split_idx], y[split_idx:]
-
-    # 2. Entrenamiento del estimador sobre la partición del 80%
+    # Entrenamiento del estimador
     model.fit(X_train, y_train)
 
     if class_names is None:
@@ -262,7 +397,7 @@ def evaluar_modelo_cat(
     else:
         val_log_loss = np.nan
 
-    # 3. Métricas equivalentes calculadas sobre el set de validación
+    # Métricas equivalentes calculadas sobre el set de validación
     train_acc = accuracy_score(y_train, y_pred_train)
     val_acc = accuracy_score(y_val, y_pred_val)
     val_balanced_acc = balanced_accuracy_score(y_val, y_pred_val)
@@ -289,7 +424,7 @@ def evaluar_modelo_cat(
         "test_log_loss": val_log_loss,
     }
 
-    # 4. Reporte por clase y matriz de confusión (evaluados sobre validación)
+    # Reporte por clase y matriz de confusión (evaluados sobre validación)
     cls_report_dict = classification_report(
         y_val,
         y_pred_val,
@@ -309,7 +444,7 @@ def evaluar_modelo_cat(
         columns=[f"Pred: {c}" for c in class_names],
     )
 
-    # 5. Importancia de Variables (MDI)
+    # Importancia de Variables (MDI)
     mdi_importances = model.feature_importances_
     df_importance = pd.DataFrame(
         {"feature": feature_names, "importance_mdi": mdi_importances}
@@ -337,7 +472,7 @@ def evaluar_modelo_cat(
 
     # Impresión de resultados
     print("=" * 60)
-    print("RESUMEN DE VALIDACIÓN (80% TRAIN / 20% VAL)")
+    print("RESUMEN DE VALIDACIÓN")
     print("=" * 60)
     for metric, val in validation_summary.items():
         print(f"{metric:<30}: {val}")
@@ -550,12 +685,12 @@ def optimizar_parametros(
 
 # Predictores a excluir segun el par forex
 excluir_dict = {
-    'EURUSD' : [],
+    'AUDUSD' : ['SPY_Volume_zscore_lag1_yeo', 'Oil_Volume_zscore_lag1_yeo', 'Gold_Volume_zscore_lag1_yeo'],  
+    'EURUSD' : ['EURUSD_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1'], 
     'GBPUSD' : [], 
-    'AUDUSD' : ['Oil_vol_directional_lag1_log'], 
-    'USDCAD' : ['USDCHF_variance_lag1_log'],  
-    'USDCHF' : [], 
-    'USDJPY' : []
+    'USDCAD' : ['USDCAD_accel_diff_zscore_lag1', 'USDCAD_vol_ratio_lag1'], 
+    'USDCHF' : ['USDCHF_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1'],
+    'USDJPY' : ['USDJPY_accel_diff_zscore_lag1']  
 }
 
 
@@ -572,7 +707,7 @@ def main(
     # Predictores a eliminar de los datasets train y live
     predictores_a_excluir = excluir_dict.get(simbolo,[])
 
-    X_train, y_train, X_live, ultima_fecha = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
+    X_train, y_train, X_live, _, ultima_fecha = preprocesar_entrenamiento(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     # Inicializar modelo y entrenar
     pipe = Pipeline([
@@ -592,26 +727,40 @@ def main(
     pipe.fit(X_train, y_train)
 
     # Realizar predicciones
-    y_pred = pipe.predict(X_live)
-    y_pred_proba = pipe.predict_proba(X_live)
-    df_probabilidades = pd.DataFrame(y_pred_proba, columns=pipe.classes_)
+    y_live_pred = pipe.predict(X_live)
+    y_live_pred_proba = pipe.predict_proba(X_live)
+    df_probabilidades = pd.DataFrame(y_live_pred_proba, columns=pipe.classes_)
 
     print(f"Entrenamiento modelo {simbolo} finalizado.")
     print(f"Dimensiones del dataset de entrenamiento:", X_train.shape)
-    print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_pred[0]}")
+    print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_live_pred[0]}")
     print("Probabilidades:")
     print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
     if evaluar:
         rf_model = pipe.named_steps['model']
-        dict_evaluacion = evaluar_modelo_cat(model=rf_model, X=X_train, y=y_train)
+
+        X_train, y_train, X_test, y_test, fecha_corte = preprocesar_evaluacion(
+            par=simbolo, 
+            variables_a_excluir=predictores_a_excluir
+            )
+        print("Evaluando modelo...")
+        print("Fecha de corte:", fecha_corte)
+
+        dict_evaluacion = evaluar_modelo_cat(
+            model=rf_model, 
+            X_train=X_train, 
+            y_train=y_train,
+            X_val=X_test,
+            y_val=y_test
+            )
 
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
             simbolo=simbolo,
             ultima_fecha=ultima_fecha,
-            y_pred=y_pred
+            y_pred=y_live_pred # prediccion del modelo completo sobre la ultima fecha
         )
 
 def entrypoint_modeling(argv: Sequence[str] | None = None):

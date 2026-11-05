@@ -11,7 +11,7 @@ from typing import List
 
 from sklearn.preprocessing import PowerTransformer
 
-from src.config import (carpeta_datos, activos_cols, forex_cols,
+from src.config import (carpeta_datos, forex_cols,
                         otros_activos_cols
                         )
 
@@ -50,16 +50,17 @@ def guardar_datos_clean(
 # Feature Engineering
 
 def calcular_pct_diff(
-       serie_target:pd.Series,
-       serie_base:pd.Series,
-       lag_base:int=0 
-)->pd.Series:
+    serie_target: pd.Series,
+    serie_base: pd.Series,
+    lag_base: int = 0
+) -> pd.Series:
+    '''
+    Calcula diferencia porcentuales mediante logaritmos
+    '''
     base = serie_base.shift(lag_base)
-    pct_diff = (serie_target.sub(base, axis=0)
-                .div(base, axis=0)
-                .replace([np.inf, -np.inf], np.nan))
-
-    return pct_diff
+    # ln(target / base) = ln(target) - ln(base)
+    log_diff = np.log(serie_target) - np.log(base)
+    return log_diff.replace([np.inf, -np.inf], np.nan)
 
 
 def calcular_zscore(
@@ -152,8 +153,8 @@ def calcular_asimetria(
 def calcular_metricas_precios(
         df:pd.DataFrame,
         simbolos:list[str],
-        periodo_corto:int=20,
-        periodo_largo:int | None = None,
+        periodo_largo:int=40,
+        periodo_corto:int | None = None,
         medias:list[int] | None = None,        
         periodo_rango:int | None = None,
         min_periodos:int | None = None
@@ -161,51 +162,54 @@ def calcular_metricas_precios(
     '''
     Calcula metricas sobre los precios de cierre:
     - Retornos
-    - Varianza de los retornos
+    - Desvio estandar de los retornos
     - Aceleraciones
     - Ratios y diferencias: si se especifica periodo_retorno_largo
     - Range position: posicion en el rango [min,max] para el periodo especificado
-    - Diferencia entre medias moviles del periodo corto y largo [periodo_corto, periodo_largo]
+    - Diferencia entre medias moviles corta y larga [media_corta, media_larga]
 
     '''
     df_out = df.copy()
-    for simbolo in simbolos:
-        
-        # Retornos, aceleraciones y Varianzas de los retornos
+    for simbolo in simbolos:        
+        # Retornos logaritmicos para 1 periodo
         columna_precio = f"{simbolo}_Close"
-        varianza_col = f"{simbolo}_variance"
+        log_precios = np.log(df_out[columna_precio])
+        retorno_1p = log_precios.diff()             
+        
+        # Desvio estandar sobre el periodo largo
+        desvio_col = f"{simbolo}_std"
+        df_out[desvio_col] = retorno_1p.rolling(window=periodo_largo, min_periods=min_periodos).std()
 
-        retorno = df_out[columna_precio].pct_change(fill_method=None)               
-        aceleracion = retorno.diff()
-        df_out[varianza_col] = retorno.rolling(window=periodo_corto, min_periods=min_periodos).var()
+        # Velocidad media del precio para el periodo largo (retorno normalizado por longitud del periodo)
+        vel_larga = log_precios.diff(periodo_largo) / periodo_largo
 
-        # Con los retornos puros se calcula la volatilidad direccional
-        df_out[f"{simbolo}_vol_directional"] = calcular_volatilidad_direccional(retorno=retorno)
+        # Aceleracion: tasa de cambio de la velocidad
+        accel_larga = vel_larga.diff(periodo_largo) / periodo_largo
+        df_out[f"{simbolo}_acceleration_zscore"] = calcular_zscore(accel_larga)
+
+        # Con los retornos logaritmicos se calcula la volatilidad direccional
+        df_out[f"{simbolo}_vol_directional"] = calcular_volatilidad_direccional(retorno=retorno_1p)
 
         # Se escala el retorno por su z-score, asumiendo media cero
-        df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno, asumir_media_cero=True)
-        df_out[f"{simbolo}_acceleration_zscore"] = calcular_zscore(aceleracion)
-
+        df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno_1p, asumir_media_cero=True)
+        
         # Se calcula la asimetria sobre los retornos
-        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno)
+        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno_1p)
 
-        if periodo_largo:
-
-            # Retorno: diferencia entre retorno corto y largo escalado           
-            retorno_largo = df_out[columna_precio].pct_change(periodo_largo,fill_method=None)
-            diferencia_retornos = retorno - retorno_largo
+        if periodo_corto:
+            # Diferencia entre retornos largo y corto           
+            vel_corta = log_precios.diff(periodo_corto) / periodo_corto           
+            diferencia_retornos = vel_corta - vel_larga
             df_out[f"{simbolo}_ret_diff_zscore"] = calcular_zscore(diferencia_retornos)
 
-            # Lo mismo con Aceleraciones           
-            aceleracion_larga = retorno_largo.diff()
-            diferencia_aceleraciones = aceleracion - aceleracion_larga
+            # Diferencia entre aceleraciones
+            accel_corta = vel_corta.diff(periodo_corto) / periodo_corto            
+            diferencia_aceleraciones = accel_corta - accel_larga            
             df_out[f"{simbolo}_accel_diff_zscore"] = calcular_zscore(diferencia_aceleraciones)
 
-
-            # Ratio de volatilidad: ratio entre desvio corto y largo 
-            desvio_corto = retorno_largo.rolling(window=periodo_corto).std()          
-            desvio_largo = retorno_largo.rolling(window=periodo_largo).std()           
-            df_out[f"{simbolo}_vol_ratio"] = (desvio_corto + EPSILON) / (desvio_largo + EPSILON)
+            # Ratio de volatilidad: ratio entre desvio corto y largo
+            desvio_corto = retorno_1p.rolling(window=periodo_corto).std()           
+            df_out[f"{simbolo}_vol_ratio"] = (desvio_corto + EPSILON) / (df_out[desvio_col] + EPSILON)
 
         # Range position
         if periodo_rango:
@@ -305,19 +309,26 @@ def procesar_precios(
     df_precios = cargar_datos_raw(nombre_fichero="precios")
     columnas_originales = df_precios.columns.tolist()
 
+    # Se asignan a NaN valores negativos
+    # Solo sobre columnas numéricas para evitar errores de tipo
+    cols_num = df_precios.select_dtypes(include="number").columns
+    df_precios[cols_num] = df_precios[cols_num].mask(df_precios[cols_num] < 0)
+
     # Metricas sobre precios: forex
 
     df_precios = calcular_metricas_precios(
         df=df_precios, 
         simbolos=forex_cols,
-        periodo_largo=12,
+        periodo_largo=40,
+        periodo_corto=25,
         medias=[15,50], # [media corta, media larga]
         periodo_rango=10
         )
 
-    # Otros activos: sin calcular medias ni extremos
+    # Otros activos: sin calcular medias, extremos ni diferencias
     df_precios = calcular_metricas_precios(
-        df=df_precios, 
+        df=df_precios,
+        periodo_largo=25, # periodo unico, no se calculan diferencias
         simbolos=otros_activos_cols
         )
 
@@ -331,8 +342,6 @@ def procesar_precios(
 
     # Metricas sobre precios extremos High - Low para pares forex
     df_precios = calcular_spread(df=df_precios, simbolos=forex_cols)
-
-
 
     # Metricas intrasemanales: Rendimiento semanal entre precios Close y Open (target continuo)
     df_precios = calcular_metricas_intrasemanales(df=df_precios, simbolos=forex_cols)   
@@ -372,45 +381,39 @@ def procesar_datos_macro() -> pd.DataFrame:
     # Cálculo de variaciones (días hábiles de mercado)
     periodo = 50
 
-    # Variables de nivel (variación porcentual)
-    df_macro["VIX_pct_chg"] = df_macro["VIX_index"].pct_change(
-        periods=periodo, fill_method=None
-    )
-    df_macro["DXY_pct_chg"] = df_macro["DXY_broad_goods"].pct_change(
-        periods=periodo, fill_method=None
-    )
-
-    # Variables expresadas en tasas/spreads (variación absoluta delta)
-    df_macro["Real_yield_delta"] = df_macro["Real_yield_10y"].diff(
-        periods=periodo
-    )
-    df_macro["STLFSI_delta"] = df_macro["St_louis_financial_stress"].diff(
-        periods=periodo
-    )
-
     # Se conserva VIX en nivel como predictor
     df_features_daily = pd.DataFrame(index=df_macro.index)
-    df_features_daily["VIX_level"] = df_macro["VIX_index"]
-    df_features_daily[f"VIX_pct_chg_{periodo}d"] = df_macro["VIX_pct_chg"]
-    df_features_daily[f"DXY_pct_chg_{periodo}d"] = df_macro["DXY_pct_chg"]
-    df_features_daily[f"Real_yield_delta_{periodo}d"] = df_macro["Real_yield_delta"]
-    df_features_daily[f"STLFSI_delta_{periodo}d"] = df_macro["STLFSI_delta"]
+    vix_level_col = "VIX_level"
+    df_features_daily[vix_level_col] = df_macro["VIX_index"]
+
+    # Variables de nivel (variación porcentual) mediante diferencia logaritmica
+    vix_pct_col = f"VIX_pct_chg_{periodo}d"
+    df_features_daily[vix_pct_col] = np.log(df_macro["VIX_index"]).diff(periods=periodo)
+
+    dxy_pct_col = f"DXY_pct_chg_{periodo}d"
+    df_features_daily[dxy_pct_col] = np.log(df_macro["DXY_broad_goods"]).diff(periods=periodo)
+
+    # Variables expresadas en tasas/spreads (variación absoluta delta)
+    yield_delta_col = f"Real_yield_delta_{periodo}d"
+    df_features_daily[yield_delta_col] = df_macro["Real_yield_10y"].diff(
+        periods=periodo
+    )
+    stl_delta_col = f"STLFSI_delta_{periodo}d"
+    df_features_daily[stl_delta_col] = df_macro["St_louis_financial_stress"].diff(
+        periods=periodo
+    )
 
     # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
     # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
-    cols_lag_1d = ["VIX_level", f"VIX_pct_chg_{periodo}d", f"Real_yield_delta_{periodo}d"]
+    cols_lag_1d = [vix_level_col, vix_pct_col, yield_delta_col]
     df_features_daily[cols_lag_1d] = df_features_daily[cols_lag_1d].shift(1)
 
     # DXY Broad: 2 días hábiles de rezago
-    df_features_daily[f"DXY_pct_chg_{periodo}d"] = df_features_daily[
-        f"DXY_pct_chg_{periodo}d"
-    ].shift(2)
+    df_features_daily[dxy_pct_col] = df_features_daily[dxy_pct_col].shift(2)
 
     # STLFSI4: Se calcula al viernes T, pero la Fed lo publica el JUEVES T+1.
     # Entre el viernes y el jueves hábil transcurren 4 días hábiles (Lun, Mar, Mié, Jue).
-    df_features_daily[f"STLFSI_delta_{periodo}d"] = df_features_daily[
-        f"STLFSI_delta_{periodo}d"
-    ].shift(4)
+    df_features_daily[stl_delta_col] = df_features_daily[stl_delta_col].shift(4)
 
     # Resampleo semanal estándar sobre los datos históricos observados
     df_weekly = df_features_daily.resample("W-FRI").last()
@@ -435,8 +438,9 @@ def procesar_datos_macro() -> pd.DataFrame:
     # Descartar las primeras filas con NaNs debidas a los cálculos iniciales
     #df_weekly_features = df_weekly_features.dropna(how="all")
 
-    # Feature engineering sobre variables macro
-    #df_weekly_features["VIX_level_skew"] = calcular_asimetria(df_weekly_features["VIX_level"])
+    # Feature engineering sobre variables macro: asimetrias
+    df_weekly_features["VIX_level_skew"] = calcular_asimetria(df_weekly_features[vix_level_col])
+    df_weekly_features["STLFSI_skew"] = calcular_asimetria(df_weekly_features[stl_delta_col])
 
 
     return df_weekly_features
@@ -512,13 +516,11 @@ def main(
     columnas_features = df_merged.columns.tolist()
     
     # Transformaciones log
-    columnas_var = encontrar_columnas(columnas_features, f"_variance_")
+    columnas_std = encontrar_columnas(columnas_features, f"_std_")
     columnas_vol_directional = encontrar_columnas(columnas_features, f"_vol_directional_")
     
 
-    columnas_log = columnas_var + columnas_vol_directional + [
-        "USDCAD_vol_ratio_lag1"
-    ]
+    columnas_log = columnas_std + columnas_vol_directional + []
     df_transform = transformar_log(df_merged, cols=columnas_log)
 
     # Transformaciones yeo-johnson
