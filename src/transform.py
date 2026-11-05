@@ -271,7 +271,8 @@ def calcular_metricas_intrasemanales(
         df_out[f"{simbolo}_gap_skew"] = calcular_asimetria(df_out[f"{simbolo}_open_gap_zscore"])
 
         # Diferencia entre el cierre y la apertura semanal (para construir target)
-        df_out[f"{simbolo}_intra_weekly"] = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
+        intra_semanal = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
+        df_out[f"{simbolo}_intra_weekly"] = calcular_zscore(intra_semanal)
 
     return df_out
 
@@ -328,7 +329,8 @@ def procesar_precios(
     # Otros activos: sin calcular medias, extremos ni diferencias
     df_precios = calcular_metricas_precios(
         df=df_precios,
-        periodo_largo=25, # periodo unico, no se calculan diferencias
+        periodo_largo=40,
+        periodo_corto=25, 
         simbolos=otros_activos_cols
         )
 

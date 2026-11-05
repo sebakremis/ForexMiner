@@ -21,7 +21,7 @@ from sklearn.metrics import (
     f1_score,
     log_loss,
 )
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, PredefinedSplit
 from sklearn.pipeline import Pipeline
 
 from src.transform import encontrar_columnas
@@ -638,16 +638,22 @@ def registrar_evaluacion_excel(
     print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
 
-def optimizar_parametros(
+def optimizar(
         simbolo:str='EURUSD'
 ):
-    tscv = TimeSeriesSplit(
-        n_splits=5 # cantidad de particiones temporales
-    )   
-
     # Predictores a eliminar de los datasets train y live
     predictores_a_excluir = []
-    X_train, y_train, _, _ = preprocesar_forex(par=simbolo, variables_a_excluir=predictores_a_excluir)
+    X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(par=simbolo, variables_a_excluir=predictores_a_excluir)
+
+    # 1. Concatenar train y test
+    X_combined = np.vstack([X_train, X_test])
+    y_combined = np.concatenate([y_train, y_test])
+
+    # 2. Definir índices: -1 entrena, 0 evalúa
+    split_indices = np.full(len(X_combined), -1)
+    split_indices[len(X_train):] = 0
+
+    pds = PredefinedSplit(test_fold=split_indices)
 
     print("Configurando GridSearchCV para {simbolo}")
     modelo_base = Pipeline(steps=[
@@ -655,9 +661,9 @@ def optimizar_parametros(
     ])
 
     param_grid = {
-        'rf__n_estimators': [400,450],
+        'rf__n_estimators': [400],
         'rf__max_depth': [4],
-        'rf__min_samples_leaf': [33,36,39],
+        'rf__min_samples_leaf': [33],
         'rf__min_samples_split': [4],
         'rf__max_samples': [0.45],
         'rf__max_features': [0.3],
@@ -669,26 +675,29 @@ def optimizar_parametros(
         estimator=modelo_base,
         param_grid=param_grid,
         scoring='f1_macro',
-        cv=tscv,
+        cv=pds,
         n_jobs=-1,
-        verbose=2
+        verbose=2,
+        refit=True # Al terminar, entrena el mejor modelo automáticamente
     )
 
-    # Entrenar con datos completos
-    print(f"Iniciando búsqueda de hiperparámetros. Esto tomará unos minutos.")
-    grid_search.fit(X_train, y_train)
+    # Ajusta probando hiperparámetros entrenando en train y testeando en test
+    grid_search.fit(X_combined, y_combined)
 
     # Resultados
-    print("\n--- Búsqueda Finalizada ---")
+    best_model = grid_search.best_estimator_
+    preds = best_model.predict(X_test)
+    print(classification_report(y_test, preds))
     print("Mejores hiperparámetros encontrados:")
     print(grid_search.best_params_)
+
 
 # Predictores a excluir segun el par forex
 excluir_dict = {
     'AUDUSD' : ['SPY_Volume_zscore_lag1_yeo', 'Oil_Volume_zscore_lag1_yeo', 'Gold_Volume_zscore_lag1_yeo'],  
-    'EURUSD' : ['EURUSD_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1'], 
+    'EURUSD' : ['EURUSD_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1', 'Gold_vol_ratio_lag1', 'Oil_vol_ratio_lag1', 'Gold_accel_diff_zscore_lag1'], 
     'GBPUSD' : [], 
-    'USDCAD' : ['USDCAD_accel_diff_zscore_lag1', 'USDCAD_vol_ratio_lag1'], 
+    'USDCAD' : ['USDCAD_accel_diff_zscore_lag1','USDCAD_vol_ratio_lag1'], 
     'USDCHF' : ['USDCHF_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1'],
     'USDJPY' : ['USDJPY_accel_diff_zscore_lag1']  
 }
