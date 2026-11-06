@@ -32,18 +32,33 @@ OTROS_ACTIVOS: Dict[str, str] = {
 # Diccionario de precios consolidado
 YFINANCE_SERIES: Dict[str, str] = {**FOREX_MAJORS, **OTROS_ACTIVOS}
 
-# Mapeo de series macro: Series ID de FRED -> Nombre descriptivo de columna
-# Factores financieros / mercado (diarios o semanales en origen)
-FRED_SERIES: Dict[str, str] = {
-    "DFII10": "Real_yield_10y",                 # 10-Year Real Yield (Diaria) 
-    "NASDAQSDEX": "Nations_skewdex",                 
-    "DTWEXBGS": "DXY_broad_goods",              # Trade Weighted USD (Diaria)
-    "VIXCLS": "VIX_index",                      # CBOE Volatility Index (Diaria)
-    "STLFSI4": "St_louis_financial_stress"     # Financial Stress Index (Semanal -> cierre de mes)
-}
-
 # Listas automaticas:
 forex_cols = list(FOREX_MAJORS.values())
 otros_activos_cols = list(OTROS_ACTIVOS.values())
 yfinance_cols = list(YFINANCE_SERIES.values())
+
+# Mapeo de series macro: Series ID de FRED -> Nombre descriptivo de columna
+# Factores financieros / mercado (diarios o semanales en origen)
+MACRO_SERIES: Dict[str, str] = {
+    "DFII10": "Real_yield_10y",                 # 10-Year Real Yield (Diaria)                 
+    "DTWEXBGS": "DXY_broad_goods",              # Trade Weighted USD (Diaria)
+    "VIXCLS": "VIX_index",                      # CBOE Volatility Index (Diaria)
+    "STLFSI4": "St_louis_financial_stress"      # Financial Stress Index (Semanal -> cierre de mes)
+}
+BOND_YIELDS: Dict[str, str] = {
+    "IRLTLT01USM156N": "USD_yield_avg",
+    "IRLTLT01JPM156N": "JPY_yield_avg",
+    "IRLTLT01DEM156N": "EUR_yield_avg",
+    "IRLTLT01GBM156N": "GBP_yield_avg",
+    "IRLTLT01CHM156N": "CHF_yield_avg",
+    "IRLTLT01CAM156N": "CAD_yield_avg",
+    "IRLTLT01AUM156N": "AUD_yield_avg"
+}
+
+# Diccionario de precios consolidado
+FRED_SERIES: Dict[str, str] = {**MACRO_SERIES, **BOND_YIELDS}
+
+# Listas automaticas:
+macro_cols = list(MACRO_SERIES.values())
+bond_cols = list(BOND_YIELDS.values())
 fred_cols = list(FRED_SERIES.values())

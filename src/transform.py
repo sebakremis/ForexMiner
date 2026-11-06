@@ -8,14 +8,26 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import List
+from typing import Dict
 
 from sklearn.preprocessing import PowerTransformer
 
 from src.config import (carpeta_datos, forex_cols,
-                        otros_activos_cols
+                        otros_activos_cols, bond_cols
                         )
 
 EPSILON = 1e-8
+
+ultimos_yields: Dict[str, float] = {
+    "USD_yield_avg": 4.94,
+    "JPY_yield_avg": 2.675,
+    "EUR_yield_avg": 3.253,
+    "GBP_yield_avg": 5.154,
+    "CHF_yield_avg": 0.436,
+    "CAD_yield_avg": 3.645,
+    "AUD_yield_avg": 4.997
+}
+
 
 # Manejo de datos
 
@@ -241,7 +253,7 @@ def calcular_metricas_precios(
     return df_out
 
 
-def calcular_spread(
+def calcular_hl_spread(
         df:pd.DataFrame,
         simbolos:list[str]
 )->pd.DataFrame:
@@ -252,7 +264,7 @@ def calcular_spread(
 
         # High - Low Spread escalado por z-score
         spread = calcular_pct_diff(df_out[columna_high], df_out[columna_low])
-        df_out[f"{simbolo}_spread_zscore"] = calcular_zscore(spread)     
+        df_out[f"{simbolo}_HL_spread_zscore"] = calcular_zscore(spread)     
 
     return df_out
 
@@ -343,7 +355,7 @@ def procesar_precios(
     df_volumen_zscore.columns = [f"{col}_zscore" for col in df_volumen_zscore.columns]
 
     # Metricas sobre precios extremos High - Low para pares forex
-    df_precios = calcular_spread(df=df_precios, simbolos=forex_cols)
+    df_precios = calcular_hl_spread(df=df_precios, simbolos=forex_cols)
 
     # Metricas intrasemanales: Rendimiento semanal entre precios Close y Open (target continuo)
     df_precios = calcular_metricas_intrasemanales(df=df_precios, simbolos=forex_cols)   
@@ -372,6 +384,79 @@ def procesar_precios(
     return df_features
 
 
+def trasladar_df_mensual(grupo):
+    # Creamos un bloque vacío con el mismo índice y columnas
+    res = pd.DataFrame(np.nan, index=grupo.index, columns=grupo.columns)
+    
+    # Tomamos el primer valor no nulo de cada columna
+    primeros = grupo.bfill().iloc[0]
+    
+    # Lo colocamos en la última fila del mes
+    res.iloc[-1] = primeros
+    return res
+
+
+def imputar_manual(df:pd.DataFrame)->pd.DataFrame:
+    '''
+    Imputa manualmente los ultimos yields registrados en el diccionario ultimos_yields
+    '''
+    df_out = df.copy()
+    # Filtrar solo las columnas que realmente existen en el DataFrame
+    cols_comunes = [col for col in ultimos_yields if col in df_out.columns]
+    
+    if not cols_comunes or df_out.empty:
+        return df_out
+
+    # Asignación limpia en la última fecha/fila sin crear índices espurios
+    ultima_fecha = df_out.index[-1]
+    df_out.loc[ultima_fecha, cols_comunes] = [ultimos_yields[c] for c in cols_comunes]
+
+    return df_out
+
+
+def imputar_interpolacion(
+    df: pd.DataFrame, 
+    rellenar_extremos: bool = False
+) -> pd.DataFrame:
+    """
+    Imputa valores NaN intermedios en un DataFrame mediante interpolación lineal.
+    
+    Parámetros:
+    - df: DataFrame de entrada.
+    - metodo: 'linear' para interpolación basada en posición/pasos iguales, 
+              o 'time'/'index' para ponderar por la distancia real entre fechas.
+    - rellenar_extremos: Si es True, aplica bfill y ffill para cubrir posibles NaNs
+                         al inicio o final de las series que la interpolación no cubre.
+    """
+    df_out = df.copy()
+    
+    # Interpolación lineal a lo largo de las columnas (filas hacia abajo)
+    df_out = df_out.interpolate(method='index', axis=0)
+    
+    # La interpolación no puede estimar NaNs antes del primer valor 
+    # ni después del último; se cubren con forward/backward fill si se solicita
+    if rellenar_extremos:
+        df_out = df_out.bfill().ffill()
+        
+    return df_out
+
+
+def calcular_yield_spreads(df:pd.DataFrame):
+    df_out = df.copy()
+    columnas_originales = df_out.columns.tolist()
+
+    for pair in forex_cols:
+        base_currency = pair[:3]
+        quote_currency = pair[3:6]
+
+        serie_yield_spread = df_out[f"{base_currency}_yield_avg"] - df_out[f"{quote_currency}_yield_avg"]
+        df_out[f"{pair}_yield_spread_zscore"] = calcular_zscore(serie_yield_spread)
+
+    df_out.drop(columns=columnas_originales, inplace=True)
+    return df_out
+
+
+
 def procesar_datos_macro() -> pd.DataFrame:
     # Cargar datos diarios
     df_macro = cargar_datos_raw(nombre_fichero="datos_macro_daily")
@@ -379,6 +464,30 @@ def procesar_datos_macro() -> pd.DataFrame:
     # Asegurar índice datetime ordenado y asegurar frecuencia de días hábiles
     df_macro.index = pd.to_datetime(df_macro.index)
     df_macro = df_macro.sort_index()
+    df_macro = df_macro.ffill()
+
+    # Separar columnas de rendimientos de bonos
+    df_bonds = df_macro[bond_cols]
+    df_macro.drop(columns=bond_cols, inplace=True)
+
+    # Agrupa por año y mes natural y aplica la recolocación en el último registro disponible
+    df_bonds = df_bonds.groupby(
+        [df_bonds.index.year, df_bonds.index.month], group_keys=False
+    ).apply(trasladar_df_mensual)
+
+    # Resampleo semanal, trasladando el ultimo valor al lunes de cada semana
+    df_bonds_weekly = df_bonds.resample("W-MON", label="left", closed="left").last()
+
+    # Se imputan manualmente los ultimos yields
+    df_bonds_weekly = imputar_manual(df_bonds_weekly)
+
+    # Se imputan los huecos por interpolacion lineal
+    df_bonds_weekly = imputar_interpolacion(df_bonds_weekly)
+
+    # Se calculan los spread de tasas para cada par forex
+    df_bonds_weekly = calcular_yield_spreads(df_bonds_weekly)
+
+    df_bonds_weekly.index.name = "Date"
 
     # Cálculo de variaciones (días hábiles de mercado)
     periodo = 50
@@ -395,9 +504,6 @@ def procesar_datos_macro() -> pd.DataFrame:
     dxy_pct_col = f"DXY_pct_chg_{periodo}d"
     df_features_daily[dxy_pct_col] = np.log(df_macro["DXY_broad_goods"]).diff(periods=periodo)
 
-    skewdex_col = f"Skewdex_pct_chg_{periodo}d"
-    df_features_daily[skewdex_col] = np.log(df_macro["Nations_skewdex"]).diff(periods=periodo)
-
     # Variables expresadas en tasas/spreads (variación absoluta delta)
     yield_delta_col = f"Real_yield_delta_{periodo}d"
     df_features_daily[yield_delta_col] = df_macro["Real_yield_10y"].diff(
@@ -410,7 +516,7 @@ def procesar_datos_macro() -> pd.DataFrame:
 
     # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
     # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
-    cols_lag_1d = [vix_level_col, vix_pct_col, yield_delta_col, skewdex_col]
+    cols_lag_1d = [vix_level_col, vix_pct_col, yield_delta_col]
     df_features_daily[cols_lag_1d] = df_features_daily[cols_lag_1d].shift(1)
 
     # DXY Broad: 2 días hábiles de rezago
@@ -420,15 +526,16 @@ def procesar_datos_macro() -> pd.DataFrame:
     # Entre el viernes y el jueves hábil transcurren 4 días hábiles (Lun, Mar, Mié, Jue).
     df_features_daily[stl_delta_col] = df_features_daily[stl_delta_col].shift(4)
 
-    # Resampleo semanal estándar sobre los datos históricos observados
-    df_weekly = df_features_daily.resample("W-FRI").last()
+    # Resampleo semanal estándar sobre los datos históricos, alineando al lunes previo
+    df_weekly = df_features_daily.resample("W-MON", label="left", closed="left").last()
 
-    # Alinear la etiqueta al lunes previo
-    df_weekly.index = df_weekly.index - pd.Timedelta(days=4)
     df_weekly.index.name = "Date"
 
+    # Unir con rendimientos de bonos
+    df_merged = pd.concat([df_weekly, df_bonds_weekly], axis=1) 
+
     # Aplicar shift(1) para modelado
-    df_weekly_features = df_weekly.shift(1)
+    df_weekly_features = df_merged.shift(1)
 
     # Forzar la inclusión de la semana actual si no está presente
     # Determinamos el lunes de la semana en curso
@@ -530,10 +637,10 @@ def main(
 
     # Transformaciones yeo-johnson
     cols_gap = encontrar_columnas(columnas_features, f"_open_gap")
-    cols_spread = encontrar_columnas(columnas_features, f"_spread_")
+    cols_hl_spread = encontrar_columnas(columnas_features, f"_HL_spread_")
     cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
 
-    columnas_yeo = cols_gap + cols_spread + cols_volume + [
+    columnas_yeo = cols_gap + cols_hl_spread + cols_volume + [
         'VIX_pct_chg_50d'
         ]
     df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
