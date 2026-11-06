@@ -21,7 +21,7 @@ from sklearn.metrics import (
     f1_score,
     log_loss,
 )
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, PredefinedSplit
+from sklearn.model_selection import GridSearchCV, PredefinedSplit
 from sklearn.pipeline import Pipeline
 
 from src.transform import encontrar_columnas
@@ -699,7 +699,7 @@ excluir_dict = {
     'GBPUSD' : [], 
     'USDCAD' : ['USDCAD_accel_diff_zscore_lag1','USDCAD_vol_ratio_lag1'], 
     'USDCHF' : ['USDCHF_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1'],
-    'USDJPY' : ['USDJPY_accel_diff_zscore_lag1']  
+    'USDJPY' : ['USDJPY_accel_diff_zscore_lag1', 'Skewdex_pct_chg_50d']  
 }
 
 

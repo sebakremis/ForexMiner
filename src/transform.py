@@ -395,6 +395,9 @@ def procesar_datos_macro() -> pd.DataFrame:
     dxy_pct_col = f"DXY_pct_chg_{periodo}d"
     df_features_daily[dxy_pct_col] = np.log(df_macro["DXY_broad_goods"]).diff(periods=periodo)
 
+    skewdex_col = f"Skewdex_pct_chg_{periodo}d"
+    df_features_daily[skewdex_col] = np.log(df_macro["Nations_skewdex"]).diff(periods=periodo)
+
     # Variables expresadas en tasas/spreads (variación absoluta delta)
     yield_delta_col = f"Real_yield_delta_{periodo}d"
     df_features_daily[yield_delta_col] = df_macro["Real_yield_10y"].diff(
@@ -407,7 +410,7 @@ def procesar_datos_macro() -> pd.DataFrame:
 
     # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
     # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
-    cols_lag_1d = [vix_level_col, vix_pct_col, yield_delta_col]
+    cols_lag_1d = [vix_level_col, vix_pct_col, yield_delta_col, skewdex_col]
     df_features_daily[cols_lag_1d] = df_features_daily[cols_lag_1d].shift(1)
 
     # DXY Broad: 2 días hábiles de rezago

@@ -28,20 +28,22 @@ OTROS_ACTIVOS: Dict[str, str] = {
     "CL=F": "Oil",
     "SPY": "SPY"
 }
-# Diccionario consolidado
-ACTIVOS: Dict[str, str] = {**FOREX_MAJORS, **OTROS_ACTIVOS}
+
+# Diccionario de precios consolidado
+YFINANCE_SERIES: Dict[str, str] = {**FOREX_MAJORS, **OTROS_ACTIVOS}
 
 # Mapeo de series macro: Series ID de FRED -> Nombre descriptivo de columna
 # Factores financieros / mercado (diarios o semanales en origen)
-DAILY_MACRO_SERIES: Dict[str, str] = {
-    "DFII10": "Real_yield_10y",                 # 10-Year Real Yield (Diaria)
+FRED_SERIES: Dict[str, str] = {
+    "DFII10": "Real_yield_10y",                 # 10-Year Real Yield (Diaria) 
+    "NASDAQSDEX": "Nations_skewdex",                 
     "DTWEXBGS": "DXY_broad_goods",              # Trade Weighted USD (Diaria)
     "VIXCLS": "VIX_index",                      # CBOE Volatility Index (Diaria)
-    "STLFSI4": "St_louis_financial_stress",     # Financial Stress Index (Semanal -> cierre de mes)
+    "STLFSI4": "St_louis_financial_stress"     # Financial Stress Index (Semanal -> cierre de mes)
 }
 
 # Listas automaticas:
 forex_cols = list(FOREX_MAJORS.values())
 otros_activos_cols = list(OTROS_ACTIVOS.values())
-activos_cols = list(ACTIVOS.values())
-daily_macro_cols = list(DAILY_MACRO_SERIES.values())
+yfinance_cols = list(YFINANCE_SERIES.values())
+fred_cols = list(FRED_SERIES.values())

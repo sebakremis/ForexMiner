@@ -11,9 +11,10 @@ from typing import Optional, Dict
 
 from src.config import (
     carpeta_datos, fecha_inicio_defecto, intervalo_defecto,
-    ACTIVOS, DAILY_MACRO_SERIES, forex_cols
+    YFINANCE_SERIES, FRED_SERIES, forex_cols
 )
 from src.data_sources import fred_api_key
+
 
 def extraer_yfinance(
     activos: Optional[Dict[str, str]] = None,
@@ -22,7 +23,7 @@ def extraer_yfinance(
     fecha_fin: Optional[str] = None,
 ) -> pd.DataFrame:
     if activos is None:
-        activos = ACTIVOS
+        activos = YFINANCE_SERIES
 
     # Conservar el orden original y eliminar duplicados manteniendo el mapeo
     tickers_unicos = list(dict.fromkeys(activos.keys()))
@@ -114,7 +115,7 @@ def extraer_fred(
         DataFrame con DatetimeIndex y cada serie en una columna, ordenado cronologicamente.
     """
     if series_map is None:
-        series_map = DAILY_MACRO_SERIES
+        series_map = FRED_SERIES
 
     fred = client or get_fred_client()
     data_frames = []
