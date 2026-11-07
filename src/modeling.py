@@ -28,14 +28,20 @@ from src.transform import encontrar_columnas
 from src.config import carpeta_datos, intervalo_defecto, forex_cols
 
 
-def cargar_datos_clean()->pd.DataFrame:
-    fichero_clean = Path(carpeta_datos) / "clean_data/datos_depurados.parquet"
+def cargar_datos_clean(
+        simbolo:str
+)->pd.DataFrame:
+    fichero_clean = Path(carpeta_datos) / f"clean_data/{simbolo}_clean.parquet"
     try:
         df = pd.read_parquet(fichero_clean)
         return df
     except FileNotFoundError:
-        print(f"Error: El archivo '{fichero_clean}' no existe en la ruta especificada.")
-        return pd.DataFrame()   
+        try:
+            df = pd.read_parquet(Path(carpeta_datos) / "clean_data/generic_clean.parquet")
+            return df
+        except FileNotFoundError:
+            print(f"Error: No se encontro fichero del simbolo {simbolo} ni el fichero generico.")
+            return pd.DataFrame()   
     except Exception as e:
         print(f"Ocurrió un error al leer el archivo Parquet: {e}")
         return pd.DataFrame()
@@ -190,7 +196,7 @@ def preprocesar_entrenamiento(
         variables_a_excluir:list[str]
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
-    df = cargar_datos_clean()
+    df = cargar_datos_clean(simbolo=par)
     df = filtrar_pares_restantes(df,par)
 
     # Separar datos de entrenamiento y datos live
@@ -313,7 +319,7 @@ def preprocesar_evaluacion(
         test_size:float=0.2
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
-    df = cargar_datos_clean()
+    df = cargar_datos_clean(simbolo=par)
     df = filtrar_pares_restantes(df,par)
 
     # Primero se remueven los datos live (ultima fecha contemporanea)

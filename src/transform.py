@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import List
-from typing import Dict
+from typing import Dict, TypedDict
 
 from sklearn.preprocessing import PowerTransformer
 
@@ -47,10 +47,54 @@ def cargar_datos_raw(
         return pd.DataFrame()
 
 
+def preprocesar_precios()->pd.DataFrame:
+    df_precios = cargar_datos_raw(nombre_fichero="precios")
+    # Se asignan a NaN valores negativos
+    # Solo sobre columnas numéricas para evitar errores de tipo
+    cols_num = df_precios.select_dtypes(include="number").columns
+    df_precios[cols_num] = df_precios[cols_num].mask(df_precios[cols_num] < 0)
+    return df_precios
+
+
+def preprocesar_macro()->tuple[pd.DataFrame, pd.DataFrame]:
+    # Cargar datos diarios
+    df_macro = cargar_datos_raw(nombre_fichero="datos_macro_daily")
+
+    # Asegurar índice datetime ordenado y asegurar frecuencia de días hábiles
+    df_macro.index = pd.to_datetime(df_macro.index)
+    df_macro = df_macro.sort_index()
+    df_macro = df_macro.ffill()
+
+    # Separar columnas de rendimientos de bonos
+    df_bonds = df_macro[bond_cols]
+    df_macro.drop(columns=bond_cols, inplace=True)
+
+    # Agrupa por año y mes natural y aplica la recolocación en el último registro disponible
+    df_bonds = df_bonds.groupby(
+        [df_bonds.index.year, df_bonds.index.month], group_keys=False
+    ).apply(trasladar_df_mensual)
+
+    # Resampleo semanal, trasladando el ultimo valor al lunes de cada semana
+    df_bonds_weekly = df_bonds.resample("W-MON", label="left", closed="left").last()
+    df_bonds_weekly.index.name = "Date"
+
+    # Se imputan manualmente los ultimos yields
+    df_bonds_weekly = imputar_manual(df_bonds_weekly)
+
+    # Se imputan los huecos por interpolacion lineal
+    df_bonds_weekly = imputar_interpolacion(df_bonds_weekly)
+
+    # Se calculan los spread de tasas para cada par forex
+    df_bonds_weekly = calcular_yield_spreads(df_bonds_weekly)
+
+    return df_bonds_weekly, df_macro
+
+
 def guardar_datos_clean(
+        par:str,
         df:pd.DataFrame
         ):
-    fichero = Path(carpeta_datos) / "clean_data/datos_depurados.parquet"
+    fichero = Path(carpeta_datos) / f"clean_data/{par}_clean.parquet"
 
     # Asegurar que el directorio exista
     fichero.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +177,7 @@ def calcular_volatilidad_direccional(
 def calcular_asimetria(
     serie: pd.Series, 
     periodo: int = 40, 
-    p: float = 0.075
+    percentil: float | None = None
 ) -> pd.Series:
     """
     Calcula Kelly's Skewness sobre una ventana móvil en Pandas.
@@ -149,11 +193,14 @@ def calcular_asimetria(
     
     Regla practica para los parametros: W = (1/p) x 3
     """
+    if percentil is None:
+        percentil = round(3/periodo, 3)
+
     rolling_obj = serie.rolling(window=periodo, min_periods=periodo, center=False)
     
-    q_sup = rolling_obj.quantile(1.0 - p)
+    q_sup = rolling_obj.quantile(1.0 - percentil)
     q_med = rolling_obj.quantile(0.50)
-    q_inf = rolling_obj.quantile(p)
+    q_inf = rolling_obj.quantile(percentil)
     
     numerador = (q_sup - q_med) - (q_med - q_inf)
     denominador = (q_sup - q_inf) + EPSILON
@@ -207,8 +254,7 @@ def calcular_metricas_precios(
         df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno_1p, asumir_media_cero=True)
         
         # Se calcula la asimetria sobre los retornos
-        percentil=round((3/periodo_largo),3)
-        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno_1p, periodo=periodo_largo, p=percentil)
+        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno_1p, periodo=periodo_largo)
 
         if periodo_corto:
             # Diferencia entre aceleraciones           
@@ -315,33 +361,34 @@ def encontrar_columnas(
     return columnas_encontradas
 
 
-def procesar_precios(
-)->pd.DataFrame:
-    df_precios = cargar_datos_raw(nombre_fichero="precios")
+def calcular_features_precios(
+        df_precios:pd.DataFrame,
+        periodo_largo:tuple[int, int],
+        periodo_corto:tuple,
+        medias:tuple,
+        rango:tuple
+        )->pd.DataFrame:
+    
     columnas_originales = df_precios.columns.tolist()
-
-    # Se asignan a NaN valores negativos
-    # Solo sobre columnas numéricas para evitar errores de tipo
-    cols_num = df_precios.select_dtypes(include="number").columns
-    df_precios[cols_num] = df_precios[cols_num].mask(df_precios[cols_num] < 0)
-
     # Metricas sobre precios: forex
 
     df_precios = calcular_metricas_precios(
         df=df_precios, 
         simbolos=forex_cols,
-        periodo_largo=40,
-        periodo_corto=25,
-        medias=[15,50], # [media corta, media larga]
-        periodo_rango=10
+        periodo_largo=periodo_largo[0],
+        periodo_corto=periodo_corto[0],
+        medias=medias[0], 
+        periodo_rango=rango[0]
         )
 
     # Otros activos
     df_precios = calcular_metricas_precios(
         df=df_precios,
-        periodo_largo=40,
-        periodo_corto=25,
-        simbolos=otros_activos_cols
+        simbolos=otros_activos_cols,
+        periodo_largo=periodo_largo[1],
+        periodo_corto=periodo_corto[1],
+        medias=medias[1], 
+        periodo_rango=rango[1]        
         )
 
     # Metricas sobre Volumen: zscore
@@ -458,49 +505,22 @@ def calcular_yield_spreads(df:pd.DataFrame):
     return df_out
 
 
-
-def procesar_datos_macro() -> pd.DataFrame:
-    # Cargar datos diarios
-    df_macro = cargar_datos_raw(nombre_fichero="datos_macro_daily")
-
-    # Asegurar índice datetime ordenado y asegurar frecuencia de días hábiles
-    df_macro.index = pd.to_datetime(df_macro.index)
-    df_macro = df_macro.sort_index()
-    df_macro = df_macro.ffill()
-
-    # Separar columnas de rendimientos de bonos
-    df_bonds = df_macro[bond_cols]
-    df_macro.drop(columns=bond_cols, inplace=True)
-
-    # Agrupa por año y mes natural y aplica la recolocación en el último registro disponible
-    df_bonds = df_bonds.groupby(
-        [df_bonds.index.year, df_bonds.index.month], group_keys=False
-    ).apply(trasladar_df_mensual)
-
-    # Resampleo semanal, trasladando el ultimo valor al lunes de cada semana
-    df_bonds_weekly = df_bonds.resample("W-MON", label="left", closed="left").last()
-    df_bonds_weekly.index.name = "Date"
-
-    # Se imputan manualmente los ultimos yields
-    df_bonds_weekly = imputar_manual(df_bonds_weekly)
-
-    # Se imputan los huecos por interpolacion lineal
-    df_bonds_weekly = imputar_interpolacion(df_bonds_weekly)
-
-    # Se calculan los spread de tasas para cada par forex
-    df_bonds_weekly = calcular_yield_spreads(df_bonds_weekly)
-
+def calcular_features_macro(
+        df_bonds_weekly:pd.DataFrame,
+        df_macro:pd.DataFrame,
+        periodo_variaciones:int,
+        periodo_skew:int
+) -> pd.DataFrame:
     # Feature engineering
-    periodo = 50
 
     # Se calculan las asimetrias de los yield spreads
     columnas_bonos = df_bonds_weekly.columns.to_list()
     for col in columnas_bonos:
-        df_bonds_weekly[f"{col}_skew"] = calcular_asimetria(df_bonds_weekly[col])
+        df_bonds_weekly[f"{col}_skew"] = calcular_asimetria(df_bonds_weekly[col], periodo=periodo_skew)
 
     # Tasa de cambio (velocidad) del USDCAD
     columna_usdcad = 'USDCAD_yield_spread_zscore'
-    df_bonds_weekly[f"{columna_usdcad}_vel"] = df_bonds_weekly[columna_usdcad].diff(periodo) / periodo
+    df_bonds_weekly[f"{columna_usdcad}_vel"] = df_bonds_weekly[columna_usdcad].diff(periodo_variaciones) / periodo_variaciones
    
     # Se conserva VIX en nivel como predictor
     df_features_daily = pd.DataFrame(index=df_macro.index)
@@ -508,21 +528,21 @@ def procesar_datos_macro() -> pd.DataFrame:
     df_features_daily[vix_level_col] = df_macro["VIX_index"]
 
     # Variables de nivel (variación porcentual) mediante diferencia logaritmica
-    vix_pct_col = f"VIX_vel_{periodo}d"
-    df_features_daily[vix_pct_col] = np.log(df_macro["VIX_index"]).diff(periods=periodo) / periodo
+    vix_pct_col = f"VIX_vel_{periodo_variaciones}d"
+    df_features_daily[vix_pct_col] = np.log(df_macro["VIX_index"]).diff(periods=periodo_variaciones) / periodo_variaciones
 
-    dxy_pct_col = f"DXY_vel_{periodo}d"
-    df_features_daily[dxy_pct_col] = np.log(df_macro["DXY_broad_goods"]).diff(periods=periodo) / periodo
+    dxy_pct_col = f"DXY_vel_{periodo_variaciones}d"
+    df_features_daily[dxy_pct_col] = np.log(df_macro["DXY_broad_goods"]).diff(periods=periodo_variaciones) / periodo_variaciones
 
     # Variables expresadas en tasas/spreads (variación absoluta delta)
-    yield_delta_col = f"Real_yield_vel_{periodo}d"
+    yield_delta_col = f"Real_yield_vel_{periodo_variaciones}d"
     df_features_daily[yield_delta_col] = df_macro["Real_yield_10y"].diff(
-        periods=periodo
-    ) / periodo
-    stl_delta_col = f"STLFSI_vel_{periodo}d"
+        periods=periodo_variaciones
+    ) / periodo_variaciones
+    stl_delta_col = f"STLFSI_vel_{periodo_variaciones}d"
     df_features_daily[stl_delta_col] = df_macro["St_louis_financial_stress"].diff(
-        periods=periodo
-    ) / periodo
+        periods=periodo_variaciones
+    ) / periodo_variaciones
 
     # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
     # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
@@ -561,8 +581,8 @@ def procesar_datos_macro() -> pd.DataFrame:
     #df_weekly_features = df_weekly_features.dropna(how="all")
 
     # Feature engineering sobre variables macro: asimetrias
-    df_weekly_features["VIX_level_skew"] = calcular_asimetria(df_weekly_features[vix_level_col])
-    df_weekly_features["STLFSI_skew"] = calcular_asimetria(df_weekly_features[stl_delta_col])
+    df_weekly_features["VIX_level_skew"] = calcular_asimetria(df_weekly_features[vix_level_col], periodo=periodo_skew)
+    df_weekly_features["STLFSI_skew"] = calcular_asimetria(df_weekly_features[stl_delta_col], periodo=periodo_skew)
 
 
     return df_weekly_features
@@ -612,6 +632,139 @@ def transformar_yeo(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     return df_out
 
 
+# Funcion de procesamiento con los parametros de cada par
+
+class ParametrosPar(TypedDict):
+    periodo_largo: tuple[int, int]
+    periodo_corto: tuple[int, int]
+    medias: tuple[list[int], list[int]]
+    rango: tuple[int, int]
+    periodo_variaciones: int
+    periodo_asimetria: int
+
+parametros_forex: dict[str, ParametrosPar] = {
+    "USDCAD": {
+        # Parametros de precios (Forex, Otros activos)
+        "periodo_largo": (40, 40),
+        "periodo_corto": (25, 25),
+        "medias": ([15, 50], [15, 50]),  # [media corta, media larga]
+        "rango": (10, 10),
+
+        # Parametros macro
+        "periodo_variaciones": 50,
+        "periodo_asimetria": 40,
+    },
+    "EURUSD": {
+        # Parametros de precios 
+        "periodo_largo": (50, 50),
+        "periodo_corto": (25, 25),
+        "medias": ([15, 50], [15, 50]),
+        "rango": (15, 15),
+
+        # Parametros macro
+        "periodo_variaciones": 50,
+        "periodo_asimetria": 60,
+        },
+    "AUDUSD": {
+        # Parametros de precios 
+        "periodo_largo": (40, 40),
+        "periodo_corto": (25, 25),
+        "medias": ([15, 50], [15, 50]),  
+        "rango": (10, 10),
+
+        # Parametros macro
+        "periodo_variaciones": 50,
+        "periodo_asimetria": 60,
+        },
+    "GBPUSD": {
+        # Parametros de precios 
+        "periodo_largo": (40, 40),
+        "periodo_corto": (25, 25),
+        "medias": ([15, 50], [15, 50]),
+        "rango": (10, 10),
+
+        # Parametros macro
+        "periodo_variaciones": 50,
+        "periodo_asimetria": 60,
+        },
+    "generico": {
+        # Parametros de precios 
+        "periodo_largo": (40, 40),
+        "periodo_corto": (25, 25),
+        "medias": ([15, 50], [15, 50]),
+        "rango": (10, 10),
+
+        # Parametros macro
+        "periodo_variaciones": 50,
+        "periodo_asimetria": 50,
+        }
+}
+
+def procesar_par(
+        df_precios:pd.DataFrame,
+        df_bonds:pd.DataFrame,
+        df_macro:pd.DataFrame,
+        parametro: ParametrosPar
+)->pd.DataFrame:
+
+    precios_features = calcular_features_precios(
+        df_precios=df_precios,
+        periodo_largo = parametro["periodo_largo"],
+        periodo_corto = parametro["periodo_corto"],
+        medias = parametro["medias"],
+        rango = parametro["rango"] 
+        )
+
+    macro_features = calcular_features_macro(
+        df_bonds_weekly=df_bonds, 
+        df_macro=df_macro,
+        periodo_variaciones=parametro["periodo_variaciones"],
+        periodo_skew=parametro["periodo_asimetria"]
+        )
+
+    df_merged = precios_features.join(macro_features, how='inner')
+
+    return df_merged
+
+
+# Post proceso: transformaciones comunes y almacenamiento de ficheros de datos clean
+
+def post_procesar_par(
+        par:str,
+        df:pd.DataFrame
+):
+    # Eliminar missings iniciales
+    df.dropna(inplace=True)
+
+    # Transformaciones
+    columnas_features = df.columns.tolist()
+    
+    # Transformaciones log
+    columnas_std = encontrar_columnas(columnas_features, f"_std_")
+    columnas_vol_directional = encontrar_columnas(columnas_features, f"_vol_directional_")
+    
+
+    columnas_log = columnas_std + columnas_vol_directional + []
+    df_transform = transformar_log(df, cols=columnas_log)
+
+    # Transformaciones yeo-johnson
+    cols_gap = encontrar_columnas(columnas_features, f"_open_gap")
+    cols_hl_spread = encontrar_columnas(columnas_features, f"_HL_spread_")
+    cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
+    col_vix_vel = encontrar_columnas(columnas_features, f"VIX_vel_")
+
+    columnas_yeo = cols_gap + cols_hl_spread + cols_volume + col_vix_vel
+    df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
+
+    # Se eliminan posibles missings luego de transformar
+    df_transform.dropna(inplace=True)
+
+    print(df_transform.info())
+
+    # Se guardan los datos depurados
+    guardar_datos_clean(par,df_transform)    
+
+
 
 '''
 Bloque principal
@@ -621,47 +774,33 @@ python -m src.transform
 '''
 def main(
 ):
-    # Cargar y procesar fichero de precios 
-    df_precios = procesar_precios(
-    )
+    # Cargar y pre-procesar fichero de precios 
+    precios_raw = preprocesar_precios()
+    bonds_raw, macro_raw = preprocesar_macro()
 
-    # Cargar y procesar datos macro
-    df_macro = procesar_datos_macro()
+    # Ejecutar solo los pares que tienen parametros definidos en el diccionario parametros
+    for par in forex_cols:
+        parametros = parametros_forex.get(par)
+        if parametros:
+            df_par = procesar_par(
+                df_precios=precios_raw,
+                df_bonds=bonds_raw,
+                df_macro=macro_raw,
+                parametro=parametros
+            )
+            post_procesar_par(par, df_par)
 
-    df_merged = df_precios.join(df_macro, how='inner')
-
-
-    # Eliminar missings iniciales
-    df_merged.dropna(inplace=True)
-
-    # Transformaciones
-    columnas_features = df_merged.columns.tolist()
-    
-    # Transformaciones log
-    columnas_std = encontrar_columnas(columnas_features, f"_std_")
-    columnas_vol_directional = encontrar_columnas(columnas_features, f"_vol_directional_")
-    
-
-    columnas_log = columnas_std + columnas_vol_directional + []
-    df_transform = transformar_log(df_merged, cols=columnas_log)
-
-    # Transformaciones yeo-johnson
-    cols_gap = encontrar_columnas(columnas_features, f"_open_gap")
-    cols_hl_spread = encontrar_columnas(columnas_features, f"_HL_spread_")
-    cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
-
-    columnas_yeo = cols_gap + cols_hl_spread + cols_volume + [
-        'VIX_vel_50d'
-        ]
-    df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
-
-    # Se eliminan posibles missings luego de transformar
-    df_transform.dropna(inplace=True)
-
-    print(df_transform.info())
-
-    # Se guardan los datos depurados
-    guardar_datos_clean(df_transform)
+    # Si existe al menos un par no mapeado, ejecutar la vía genérica una única vez
+    hay_pares_genericos = any(par not in parametros_forex for par in forex_cols)
+    if hay_pares_genericos:
+        df_generico = procesar_par(
+            df_precios=precios_raw,
+            df_bonds=bonds_raw,
+            df_macro=macro_raw,
+            parametro=parametros_forex["generico"]
+        )
+        post_procesar_par("generic", df_generico)
+                  
 
 
 if __name__ == "__main__":
