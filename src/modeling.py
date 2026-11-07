@@ -35,13 +35,10 @@ def cargar_datos_clean(
     try:
         df = pd.read_parquet(fichero_clean)
         return df
+
     except FileNotFoundError:
-        try:
-            df = pd.read_parquet(Path(carpeta_datos) / "clean_data/generic_clean.parquet")
-            return df
-        except FileNotFoundError:
-            print(f"Error: No se encontro fichero del simbolo {simbolo} ni el fichero generico.")
-            return pd.DataFrame()   
+        print(f"Error: No se encontro fichero del par {simbolo}.")
+        return pd.DataFrame()   
     except Exception as e:
         print(f"Ocurrió un error al leer el archivo Parquet: {e}")
         return pd.DataFrame()
@@ -720,7 +717,7 @@ Ejecucion desde el terminal:
 python -m src.modeling
 '''
 def main(
-        simbolo:str,
+        simbolo:str="EURUSD",
         evaluar:bool=False
 ):
     
@@ -786,7 +783,7 @@ def entrypoint_modeling(argv: Sequence[str] | None = None):
     parser = argparse.ArgumentParser(description="Módulo de Modelado Categórico")
 
     parser.add_argument(
-        "--simbolo", type=str, default="EURUSD", help="Símbolo del activo"
+        "--simbolo", type=str, help="Símbolo del activo"
     )
     parser.add_argument(
             "--evaluar",
@@ -794,9 +791,18 @@ def entrypoint_modeling(argv: Sequence[str] | None = None):
             help="Ejecuta la evaluación del modelo tras el entrenamiento",
         )
     args = parser.parse_args(argv)
-    
-    # Ejecuta la lógica central con los argumentos parseados
-    return main(simbolo=args.simbolo, evaluar=args.evaluar)
+
+    simbolo_entrada=args.simbolo
+    if simbolo_entrada:
+        # Limpiar y validar el simbolo
+        simbolo_limpio = simbolo_entrada.strip().upper()
+        if simbolo_limpio not in forex_cols:
+                print(f"Aviso: El símbolo '{simbolo_limpio}' no existe.")
+                return
+
+        # Ejecuta la lógica central con los argumentos parseados
+        return main(simbolo_limpio, evaluar=args.evaluar)
+    return main(evaluar=args.evaluar)
 
 if __name__ == '__main__':
     entrypoint_modeling()

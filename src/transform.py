@@ -7,8 +7,8 @@ Modulo de la fase de transformacion
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import List
-from typing import Dict, TypedDict
+from typing import List, Dict, TypedDict, Sequence
+import argparse
 
 from sklearn.preprocessing import PowerTransformer
 
@@ -361,14 +361,15 @@ def encontrar_columnas(
     return columnas_encontradas
 
 
-def calcular_features_precios(
-        df_precios:pd.DataFrame,
+def obtener_features_precios(
+        df:pd.DataFrame,
         periodo_largo:tuple[int, int],
         periodo_corto:tuple,
         medias:tuple,
         rango:tuple
         )->pd.DataFrame:
-    
+
+    df_precios = df.copy()
     columnas_originales = df_precios.columns.tolist()
     # Metricas sobre precios: forex
 
@@ -505,13 +506,14 @@ def calcular_yield_spreads(df:pd.DataFrame):
     return df_out
 
 
-def calcular_features_macro(
-        df_bonds_weekly:pd.DataFrame,
-        df_macro:pd.DataFrame,
+def obtener_features_macro(
+        df_b:pd.DataFrame,
+        df_m:pd.DataFrame,
         periodo_variaciones:int,
         periodo_skew:int
 ) -> pd.DataFrame:
-    # Feature engineering
+    df_bonds_weekly = df_b.copy()
+    df_macro = df_m.copy()
 
     # Se calculan las asimetrias de los yield spreads
     columnas_bonos = df_bonds_weekly.columns.to_list()
@@ -643,26 +645,26 @@ class ParametrosPar(TypedDict):
     periodo_asimetria: int
 
 parametros_forex: dict[str, ParametrosPar] = {
-    "USDCAD": {
-        # Parametros de precios (Forex, Otros activos)
-        "periodo_largo": (40, 40),
-        "periodo_corto": (25, 25),
-        "medias": ([15, 50], [15, 50]),  # [media corta, media larga]
-        "rango": (10, 10),
-
-        # Parametros macro
-        "periodo_variaciones": 50,
-        "periodo_asimetria": 40,
-    },
     "EURUSD": {
-        # Parametros de precios 
+        # Parametros de precios (Forex, Otros activos)
         "periodo_largo": (50, 50),
         "periodo_corto": (25, 25),
-        "medias": ([15, 50], [15, 50]),
+        "medias": ([15, 50], [15, 50]), # [media corta, media larga]
         "rango": (15, 15),
 
         # Parametros macro
         "periodo_variaciones": 50,
+        "periodo_asimetria": 60,
+        },
+    "GBPUSD": {
+        # Parametros de precios 
+        "periodo_largo": (40, 40),
+        "periodo_corto": (25, 25),
+        "medias": ([15, 50], [15, 50]),
+        "rango": (20, 10),
+
+        # Parametros macro
+        "periodo_variaciones": 55,
         "periodo_asimetria": 60,
         },
     "AUDUSD": {
@@ -676,8 +678,19 @@ parametros_forex: dict[str, ParametrosPar] = {
         "periodo_variaciones": 50,
         "periodo_asimetria": 60,
         },
-    "GBPUSD": {
+    "USDJPY": {
         # Parametros de precios 
+        "periodo_largo": (40, 40),
+        "periodo_corto": (20, 25),
+        "medias": ([20, 50], [15, 50]),  
+        "rango": (10, 10),
+
+        # Parametros macro
+        "periodo_variaciones": 35,
+        "periodo_asimetria": 50,
+    },
+    "USDCAD": {
+        # Parametros de precios
         "periodo_largo": (40, 40),
         "periodo_corto": (25, 25),
         "medias": ([15, 50], [15, 50]),
@@ -685,9 +698,9 @@ parametros_forex: dict[str, ParametrosPar] = {
 
         # Parametros macro
         "periodo_variaciones": 50,
-        "periodo_asimetria": 60,
-        },
-    "generico": {
+        "periodo_asimetria": 40,
+    },
+    "USDCHF": {
         # Parametros de precios 
         "periodo_largo": (40, 40),
         "periodo_corto": (25, 25),
@@ -695,7 +708,7 @@ parametros_forex: dict[str, ParametrosPar] = {
         "rango": (10, 10),
 
         # Parametros macro
-        "periodo_variaciones": 50,
+        "periodo_variaciones": 45,
         "periodo_asimetria": 50,
         }
 }
@@ -707,17 +720,17 @@ def procesar_par(
         parametro: ParametrosPar
 )->pd.DataFrame:
 
-    precios_features = calcular_features_precios(
-        df_precios=df_precios,
+    precios_features = obtener_features_precios(
+        df=df_precios,
         periodo_largo = parametro["periodo_largo"],
         periodo_corto = parametro["periodo_corto"],
         medias = parametro["medias"],
         rango = parametro["rango"] 
         )
 
-    macro_features = calcular_features_macro(
-        df_bonds_weekly=df_bonds, 
-        df_macro=df_macro,
+    macro_features = obtener_features_macro(
+        df_b=df_bonds, 
+        df_m=df_macro,
         periodo_variaciones=parametro["periodo_variaciones"],
         periodo_skew=parametro["periodo_asimetria"]
         )
@@ -773,13 +786,19 @@ Ejecucion desde el terminal:
 python -m src.transform
 '''
 def main(
-):
+        simbolo_consola:str | None = None
+):    
     # Cargar y pre-procesar fichero de precios 
     precios_raw = preprocesar_precios()
     bonds_raw, macro_raw = preprocesar_macro()
 
-    # Ejecutar solo los pares que tienen parametros definidos en el diccionario parametros
-    for par in forex_cols:
+    # Procesar pares
+    if simbolo_consola:        
+        pares_forex=[simbolo_consola]
+    else:
+        pares_forex= list(parametros_forex.keys())
+
+    for par in pares_forex:
         parametros = parametros_forex.get(par)
         if parametros:
             df_par = procesar_par(
@@ -790,18 +809,27 @@ def main(
             )
             post_procesar_par(par, df_par)
 
-    # Si existe al menos un par no mapeado, ejecutar la vía genérica una única vez
-    hay_pares_genericos = any(par not in parametros_forex for par in forex_cols)
-    if hay_pares_genericos:
-        df_generico = procesar_par(
-            df_precios=precios_raw,
-            df_bonds=bonds_raw,
-            df_macro=macro_raw,
-            parametro=parametros_forex["generico"]
-        )
-        post_procesar_par("generic", df_generico)
                   
+def entrypoint_transform(argv: Sequence[str] | None = None):
+    """Punto de entrada de línea de comandos."""
+    parser = argparse.ArgumentParser(description="Módulo de Modelado Categórico")
+
+    parser.add_argument(
+        "--simbolo", type=str, help="Símbolo del activo"
+    )
+    args = parser.parse_args(argv)
+
+    simbolo_entrada=args.simbolo
+
+    if simbolo_entrada:
+    # Limpiar y validar que el simbolo tenga parametros configurados
+        simbolo_limpio = simbolo_entrada.strip().upper()
+        if simbolo_limpio not in parametros_forex:
+                print(f"Aviso: El símbolo '{simbolo_limpio}' no tiene configuración en parametros_forex.")
+                return
+        return main(simbolo_limpio)
+    return main()
 
 
 if __name__ == "__main__":
-    main()
+    entrypoint_transform()
