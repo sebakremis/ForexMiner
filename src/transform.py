@@ -131,35 +131,36 @@ def calcular_volatilidad_direccional(
 
 
 def calcular_asimetria(
-    serie: pd.Series,
-    periodo: int = 50,
-    min_periodos: int | None = None,
+    serie: pd.Series, 
+    periodo: int = 40, 
+    p: float = 0.075
 ) -> pd.Series:
-    """Calcula la asimetría (skewness) móvil contemporánea de una serie temporal.
-
+    """
+    Calcula Kelly's Skewness sobre una ventana móvil en Pandas.
+    
     Parámetros:
     -----------
-    serie : pd.Series
-        Serie temporal (ej. retornos logarítmicos, spreads, etc.).
-    periodo : int, por defecto 50
-        Tamaño de la ventana móvil retrospectiva.
-    min_periodos : int | None, opcional
-        Número mínimo de observaciones requeridas. Si es None, requiere
-        el período completo.
-
-    Retorna:
-    --------
-    pd.Series con el sesgo móvil de la serie.
+    series : pd.Series
+        Serie temporal univariada (ej. retornos, volumen diferencial, spread).
+    window : int
+        Tamaño de la ventana hacia atrás (W).
+    p : float
+        Percentil de cola inferior (ej. 0.05 para colas 5% y 95%).
+    
+    Regla practica para los parametros: W = (1/p) x 3
     """
-    if min_periodos is None:
-        min_periodos = periodo
-
-    asimetria = serie.rolling(
-        window=periodo, min_periods=min_periodos
-    ).skew()
-
-    asimetria.name = f"{serie.name}_skew" if serie.name else "skew"
-    return asimetria
+    rolling_obj = serie.rolling(window=periodo, min_periods=periodo, center=False)
+    
+    q_sup = rolling_obj.quantile(1.0 - p)
+    q_med = rolling_obj.quantile(0.50)
+    q_inf = rolling_obj.quantile(p)
+    
+    numerador = (q_sup - q_med) - (q_med - q_inf)
+    denominador = (q_sup - q_inf) + EPSILON
+    
+    kelly_skew = numerador / denominador
+    kelly_skew.name = f"{serie.name}_skew"
+    return kelly_skew
 
                                                                    
 def calcular_metricas_precios(
@@ -206,15 +207,12 @@ def calcular_metricas_precios(
         df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno_1p, asumir_media_cero=True)
         
         # Se calcula la asimetria sobre los retornos
-        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno_1p)
+        percentil=round((3/periodo_largo),3)
+        df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno_1p, periodo=periodo_largo, p=percentil)
 
         if periodo_corto:
-            # Diferencia entre retornos largo y corto           
+            # Diferencia entre aceleraciones           
             vel_corta = log_precios.diff(periodo_corto) / periodo_corto           
-            diferencia_retornos = vel_corta - vel_larga
-            df_out[f"{simbolo}_ret_diff_zscore"] = calcular_zscore(diferencia_retornos)
-
-            # Diferencia entre aceleraciones
             accel_corta = vel_corta.diff(periodo_corto) / periodo_corto            
             diferencia_aceleraciones = accel_corta - accel_larga            
             df_out[f"{simbolo}_accel_diff_zscore"] = calcular_zscore(diferencia_aceleraciones)
@@ -338,11 +336,11 @@ def procesar_precios(
         periodo_rango=10
         )
 
-    # Otros activos: sin calcular medias, extremos ni diferencias
+    # Otros activos
     df_precios = calcular_metricas_precios(
         df=df_precios,
         periodo_largo=40,
-        periodo_corto=25, 
+        periodo_corto=25,
         simbolos=otros_activos_cols
         )
 
@@ -442,6 +440,10 @@ def imputar_interpolacion(
 
 
 def calcular_yield_spreads(df:pd.DataFrame):
+    '''
+    Calcula la diferencia entre las tasas de la moneda base y de cotizacion.
+    Devuelve la variable escalada por el z-score.
+    '''
     df_out = df.copy()
     columnas_originales = df_out.columns.tolist()
 
@@ -477,6 +479,7 @@ def procesar_datos_macro() -> pd.DataFrame:
 
     # Resampleo semanal, trasladando el ultimo valor al lunes de cada semana
     df_bonds_weekly = df_bonds.resample("W-MON", label="left", closed="left").last()
+    df_bonds_weekly.index.name = "Date"
 
     # Se imputan manualmente los ultimos yields
     df_bonds_weekly = imputar_manual(df_bonds_weekly)
@@ -487,32 +490,39 @@ def procesar_datos_macro() -> pd.DataFrame:
     # Se calculan los spread de tasas para cada par forex
     df_bonds_weekly = calcular_yield_spreads(df_bonds_weekly)
 
-    df_bonds_weekly.index.name = "Date"
-
-    # Cálculo de variaciones (días hábiles de mercado)
+    # Feature engineering
     periodo = 50
 
+    # Se calculan las asimetrias de los yield spreads
+    columnas_bonos = df_bonds_weekly.columns.to_list()
+    for col in columnas_bonos:
+        df_bonds_weekly[f"{col}_skew"] = calcular_asimetria(df_bonds_weekly[col])
+
+    # Tasa de cambio (velocidad) del USDCAD
+    columna_usdcad = 'USDCAD_yield_spread_zscore'
+    df_bonds_weekly[f"{columna_usdcad}_vel"] = df_bonds_weekly[columna_usdcad].diff(periodo) / periodo
+   
     # Se conserva VIX en nivel como predictor
     df_features_daily = pd.DataFrame(index=df_macro.index)
     vix_level_col = "VIX_level"
     df_features_daily[vix_level_col] = df_macro["VIX_index"]
 
     # Variables de nivel (variación porcentual) mediante diferencia logaritmica
-    vix_pct_col = f"VIX_pct_chg_{periodo}d"
-    df_features_daily[vix_pct_col] = np.log(df_macro["VIX_index"]).diff(periods=periodo)
+    vix_pct_col = f"VIX_vel_{periodo}d"
+    df_features_daily[vix_pct_col] = np.log(df_macro["VIX_index"]).diff(periods=periodo) / periodo
 
-    dxy_pct_col = f"DXY_pct_chg_{periodo}d"
-    df_features_daily[dxy_pct_col] = np.log(df_macro["DXY_broad_goods"]).diff(periods=periodo)
+    dxy_pct_col = f"DXY_vel_{periodo}d"
+    df_features_daily[dxy_pct_col] = np.log(df_macro["DXY_broad_goods"]).diff(periods=periodo) / periodo
 
     # Variables expresadas en tasas/spreads (variación absoluta delta)
-    yield_delta_col = f"Real_yield_delta_{periodo}d"
+    yield_delta_col = f"Real_yield_vel_{periodo}d"
     df_features_daily[yield_delta_col] = df_macro["Real_yield_10y"].diff(
         periods=periodo
-    )
-    stl_delta_col = f"STLFSI_delta_{periodo}d"
+    ) / periodo
+    stl_delta_col = f"STLFSI_vel_{periodo}d"
     df_features_daily[stl_delta_col] = df_macro["St_louis_financial_stress"].diff(
         periods=periodo
-    )
+    ) / periodo
 
     # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
     # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
@@ -641,7 +651,7 @@ def main(
     cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
 
     columnas_yeo = cols_gap + cols_hl_spread + cols_volume + [
-        'VIX_pct_chg_50d'
+        'VIX_vel_50d'
         ]
     df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
 

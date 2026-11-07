@@ -306,6 +306,7 @@ def categorizar_con_bins(
 
     return df_out
 
+
 def preprocesar_evaluacion(
         par:str,
         variables_a_excluir:list[str],
@@ -695,13 +696,16 @@ def optimizar(
 # Predictores a excluir segun el par forex
 excluir_dict = {
     'AUDUSD' : ['SPY_Volume_zscore_lag1_yeo', 'Oil_Volume_zscore_lag1_yeo', 'Gold_Volume_zscore_lag1_yeo'],  
-    'EURUSD' : ['EURUSD_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1', 'Gold_vol_ratio_lag1', 'Oil_vol_ratio_lag1', 'Gold_accel_diff_zscore_lag1'], 
+    'EURUSD' : ['Gold_acceleration_zscore_lag1', 'Gold_vol_ratio_lag1', 'Oil_vol_ratio_lag1', 'Gold_accel_diff_zscore_lag1'], 
     'GBPUSD' : [], 
-    'USDCAD' : ['USDCAD_accel_diff_zscore_lag1','USDCAD_vol_ratio_lag1'], 
-    'USDCHF' : ['USDCHF_accel_diff_zscore_lag1', 'Gold_acceleration_zscore_lag1'],
-    'USDJPY' : ['USDJPY_accel_diff_zscore_lag1', 'Skewdex_pct_chg_50d']  
+    'USDCAD' : ['Oil_return_skew_lag1'],  
+    'USDCHF' : ['Gold_acceleration_zscore_lag1'],
+    'USDJPY' : []
 }
 
+# Predictores a eliminar para todos los pares
+excluir_cols = [
+]
 
 '''
 Bloque principal
@@ -713,9 +717,8 @@ def main(
         simbolo:str,
         evaluar:bool=False
 ):
-    # Predictores a eliminar de los datasets train y live
-    predictores_a_excluir = excluir_dict.get(simbolo,[])
-
+    
+    predictores_a_excluir = excluir_dict.get(simbolo,[]) + excluir_cols
     X_train, y_train, X_live, _, ultima_fecha = preprocesar_entrenamiento(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     # Inicializar modelo y entrenar
