@@ -25,7 +25,7 @@ Ademas el fichero `notebook_EDA.ipynb` ubicado en la raiz del proyecto permite r
 El mismo pipeline permite modelar los 6 cruces principales de divisas Forex contra el dólar estadounidense. Cada par de divisas cuenta con sus propios parámetros en el procesamiento de datos durante la fase de transformación.
 
 
-El modelado con *RandomForestClassifier* arroja métricas de ajuste *moderadas*, actualmente con precisiones promedio del 41.5%. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos. Dicho esto, los valores obtenidos se encuentran por encima de la precisión del 33% que se obtendría mediante una clasificación al azar, indicando que el modelado permite encontrar algunos patrones y generalizar.
+El modelado con *RandomForestClassifier* arroja métricas de ajuste *moderadas*, actualmente con precisiones promedio del 41.5%. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos. Dicho esto, los valores obtenidos se encuentran por encima de la precisión del 33% que se obtendría mediante una clasificación de 3 clases al azar, indicando que el modelado permite encontrar algunos patrones y generalizar.
 
 ---
 ## 💻 Ejecución
