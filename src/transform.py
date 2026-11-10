@@ -576,8 +576,8 @@ def obtener_features_macro(
 
     if lunes_actual not in df_weekly_features.index:
         # La información para predecir la semana actual es exactamente
-        # el último estado consolidado sin shift (df_weekly.iloc[-1])
-        df_weekly_features.loc[lunes_actual] = df_weekly.iloc[-1]
+        # el último estado consolidado sin shift (df_merged.iloc[-1])
+        df_weekly_features.loc[lunes_actual] = df_merged.iloc[-1]
 
     # Descartar las primeras filas con NaNs debidas a los cálculos iniciales
     #df_weekly_features = df_weekly_features.dropna(how="all")

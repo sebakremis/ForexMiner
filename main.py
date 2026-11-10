@@ -18,7 +18,7 @@ python main.py
 '''
 def main():
     #extraer()
-    #transformar()
+    transformar()
     for pair in forex_cols:
         modelar(simbolo=pair, evaluar=True)
 

@@ -734,7 +734,8 @@ def main(
             min_samples_split= 4,
             max_samples= 0.45,
             max_features= 0.3,
-            class_weight='balanced_subsample'            
+            class_weight='balanced_subsample',
+            n_jobs=1            
         ))
 
     ])
