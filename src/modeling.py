@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 from typing import Tuple, Optional, Sequence
 from datetime import datetime
+import matplotlib.pyplot as plt
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
@@ -20,6 +21,7 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     log_loss,
+    roc_auc_score
 )
 from sklearn.model_selection import GridSearchCV, PredefinedSplit
 from sklearn.pipeline import Pipeline
@@ -642,6 +644,8 @@ def registrar_evaluacion_excel(
     print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
 
+# Funciones complementarias de evaluacion
+
 def optimizar(
         simbolo:str='EURUSD'
 ):
@@ -694,6 +698,49 @@ def optimizar(
     print(classification_report(y_test, preds))
     print("Mejores hiperparámetros encontrados:")
     print(grid_search.best_params_)
+
+
+def curva_desempenio(
+        simbolo:str="EURUSD"
+):
+    '''
+    Grafica la evolucion del desempeno del modelo al aumentar la complejidad.
+    Identifica el trade-off entre Sesgo y Varianza:
+    - Alto sesgo (underfitting): Metricas de train y test bajas y cercanas entre si.
+    - Zona de equilibrio: punto donde la metrica test alcanza su valor optimo antes de degradarse.
+    - Alta varianza (overfitting): la metrica de train sigue subiendo, mientras que la de
+    test comienza a caer o se abre una brecha (generalization gap).
+    '''
+    predictores_a_excluir = []
+    X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(par=simbolo, variables_a_excluir=predictores_a_excluir)
+
+    depths = range(2, 20, 2)
+    train_scores, test_scores = [], []
+
+    for d in depths:
+        rf = RandomForestClassifier(n_estimators=100, max_depth=d, random_state=42, n_jobs=-1)
+        rf.fit(X_train, y_train)
+
+        # Probabilidades en train y test
+        y_train_prob = rf.predict_proba(X_train)
+        y_test_prob = rf.predict_proba(X_test)
+
+        # Metricas roc_auc
+        train_auc = roc_auc_score(y_train, y_train_prob, multi_class='ovr', average='weighted')
+        test_auc = roc_auc_score(y_test, y_test_prob, multi_class='ovr', average='weighted')
+
+        train_scores.append(train_auc)
+        test_scores.append(test_auc)
+
+    plt.figure(figsize=(8, 4.5))
+    plt.plot(depths, train_scores, label="Train AUC (Aproximación al sesgo)")
+    plt.plot(depths, test_scores, label="Test AUC (Generalización)")
+    plt.xlabel("max_depth")
+    plt.ylabel("ROC AUC")
+    plt.title("Curva de Complejidad: Brecha Train-Test vs. Profundidad")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 
 # Predictores a excluir segun el par forex
