@@ -20,7 +20,7 @@ Cuenta con tres fases:
 * *Transformación*: tratamiento de valores inválidos, feature engineering, imputación de valores perdidos, escalado de variables con z-score, transformaciones logarítmicas y de yeo-johnson. Adicionalmente se calculan las variables lag, sobre aquellas que requieran ser desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
 * *Modelado*: aplicación de modelo  clasificador *RandomForest* con datos completos, prueba de validación con partición de series temporales, evaluación de resultados, exportación de datos y predicciones y módulo para la optimización de hiper-parámetros.
 
-Ademas el fichero `notebook_EDA.ipynb` ubicado en la raiz del proyecto permite realizar un análisis exploratorio de los datos transformados para cada par forex, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a las 3 clases de la variable objetivo seleccionada.
+Además el fichero `notebook_EDA.ipynb` ubicado en la raiz del proyecto permite realizar un análisis exploratorio de los datos transformados para cada par forex, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a las 3 clases de la variable objetivo seleccionada.
 
 El mismo pipeline permite modelar los 6 cruces principales de divisas Forex contra el dólar estadounidense. Cada par de divisas cuenta con sus propios parámetros en el procesamiento de datos durante la fase de transformación.
 

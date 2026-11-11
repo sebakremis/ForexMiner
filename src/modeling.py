@@ -757,7 +757,7 @@ def curva_desempenio(
     
     plt.xlabel(complexity_var)
     plt.ylabel("ROC AUC")
-    plt.title(f"Curva de Complejidad: Brecha Train-Test vs. {complexity_var}")
+    plt.title(f"Curva de Complejidad para el par {simbolo}")
     plt.legend()
     plt.grid(True)
     plt.show()
