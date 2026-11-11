@@ -701,7 +701,8 @@ def optimizar(
 
 
 def curva_desempenio(
-        simbolo:str="EURUSD"
+        simbolo: str = "EURUSD",
+        test_size: float=0.2
 ):
     '''
     Grafica la evolucion del desempeno del modelo al aumentar la complejidad.
@@ -712,13 +713,28 @@ def curva_desempenio(
     test comienza a caer o se abre una brecha (generalization gap).
     '''
     predictores_a_excluir = []
-    X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(par=simbolo, variables_a_excluir=predictores_a_excluir)
+    X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(
+        par=simbolo, 
+        variables_a_excluir=predictores_a_excluir,
+        test_size=test_size
+    )
 
-    depths = range(2, 20, 2)
+    complexity_var = 'max_depth'
+    complexity_range = list(range(1, 10, 1))
     train_scores, test_scores = [], []
 
-    for d in depths:
-        rf = RandomForestClassifier(n_estimators=100, max_depth=d, random_state=42, n_jobs=-1)
+    for value in complexity_range:
+        rf = RandomForestClassifier(
+            random_state=42,
+            n_estimators=400, 
+            max_depth=value,
+            min_samples_leaf=28,
+            min_samples_split=4,
+            max_samples=0.45,
+            max_features=0.3,
+            class_weight='balanced_subsample',              
+            n_jobs=1
+        )
         rf.fit(X_train, y_train)
 
         # Probabilidades en train y test
@@ -733,11 +749,15 @@ def curva_desempenio(
         test_scores.append(test_auc)
 
     plt.figure(figsize=(8, 4.5))
-    plt.plot(depths, train_scores, label="Train AUC (Aproximación al sesgo)")
-    plt.plot(depths, test_scores, label="Test AUC (Generalización)")
-    plt.xlabel("max_depth")
+    plt.plot(complexity_range, train_scores, marker='o', label="Train AUC (Aproximación al sesgo)")
+    plt.plot(complexity_range, test_scores, marker='s', label="Test AUC (Generalización)")
+    
+    # Invertir la dirección del eje X (para Min Samples leaf):
+    #plt.gca().invert_xaxis()
+    
+    plt.xlabel(complexity_var)
     plt.ylabel("ROC AUC")
-    plt.title("Curva de Complejidad: Brecha Train-Test vs. Profundidad")
+    plt.title(f"Curva de Complejidad: Brecha Train-Test vs. {complexity_var}")
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -776,8 +796,8 @@ def main(
         ('model', RandomForestClassifier(
             random_state=42,
             n_estimators=400,
-            max_depth=4,
-            min_samples_leaf=33,
+            max_depth=1,
+            min_samples_leaf=28,
             min_samples_split= 4,
             max_samples= 0.45,
             max_features= 0.3,

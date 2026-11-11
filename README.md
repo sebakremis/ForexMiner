@@ -24,8 +24,21 @@ Ademas el fichero `notebook_EDA.ipynb` ubicado en la raiz del proyecto permite r
 
 El mismo pipeline permite modelar los 6 cruces principales de divisas Forex contra el dólar estadounidense. Cada par de divisas cuenta con sus propios parámetros en el procesamiento de datos durante la fase de transformación.
 
+---
+## 💻 Evaluación de modelos
 
-El modelado con *RandomForestClassifier* arroja métricas de ajuste *moderadas*, actualmente con precisiones promedio del 41.5%. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos. Dicho esto, los valores obtenidos se encuentran por encima de la precisión del 33% que se obtendría mediante una clasificación de 3 clases al azar, indicando que el modelado permite encontrar algunos patrones y generalizar.
+### *RandomForestClassifier*
+
+El modelado arroja métricas de ajuste *moderadas*, con precisiones promedio del 40 %. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos. Dicho esto, los valores obtenidos se encuentran por encima de la precisión del 33% que se obtendría mediante una clasificación de 3 clases al azar, indicando que el modelado permite encontrar algunos patrones y generalizar.
+
+### Curva de Desempeño
+![Curva de complejidad creciente](./pictures/curva_desempenio.png)
+
+* Al aumentar la complejidad del modelo, con una profundidad máxima de árboles entre 2 y 5, el modelo triplica su brecha, con el AUC de entrenamiento aumentando pero sin aportar valor en test. Toda la ganancia en entrenamiento en este tramo corresponde a memorización de patrones no generalizables.
+* A partir de `max_depth=5`, la curva de train se vuelve horizontal. Los árboles agotan los subconjuntos de datos suficientes para seguir abriendo ramas a partir de este nivel. Fijar profundidades mayores produce exactamente el mismo bosque.
+* El punto óptimo se encuentra con una profundidad máxima de 1, donde la brecha es mínima. El punto `max_depth=3` presenta el mismo resultado en test, pero incorporando más del doble de sobreajuste y varianza. Aplicando además el Principio de Parsimonia, es preferible el modelo mas simple porque no memoriza interacciones espurias de variables y es mas robusto frente a cambios de régimenes.
+
+El *randomforest* restringido a una profundidad máxima de 1 no permite aprovechar su fortaleza, forzando a un algoritmo diseñado para hallar relaciones complejas a comportarse como un clasificador lineal.
 
 ---
 ## 💻 Ejecución
