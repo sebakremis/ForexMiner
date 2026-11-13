@@ -104,7 +104,7 @@ Además, se extraen mediante la api Fred los rendimientos históricos de los bon
 
 La principal limitación de los datos de los rendimientos de bonos es que son publicados en Fred mensualmente, con una demora de hasta 2 meses. Ya que los datos informados representan el promedio mensual a fin de mes, se imputan los valores semanales faltantes mediante una extrapolación lineal, aprovechando el hecho que las medias móviles se mueven en forma de línea. 
 
-**Importante**: Es necesario imputar de forma manual los últimos valores conocidos para los bonos a 10 años, actualizando los valores en el diccionario `ultimos_yields`. 
+⚠️ **Importante**: Es necesario imputar de forma manual los últimos valores conocidos para los bonos a 10 años, actualizando los valores en el diccionario `ultimos_yields`. 
 
 ---
 ## 🗂️ Estructura del repo
@@ -115,7 +115,7 @@ FOREXMINER/
 │   ├── clean_data/                  # Almacena los datos depurados para cada par forex
 │   ├── evaluacion_modelos/          # Almacena los resultados obtenidos en el modelado
 │   ├── raw_data/                    # Sub-directorio para almacenar los datos crudos
-│   ├── cols_filtrar                 # Fichero que almacena el diccionario de columnas a excluir
+│   ├── cols_filtrar.json            # Fichero que almacena el diccionario de columnas a excluir
 ├── src/                             # Sub-directorio con los módulos de funciones 
 │   ├── __init__.py                  # Fichero vacío, inicializa la carpeta como paquete
 │   ├── config.py                    # Configuración global del proyecto 
@@ -152,9 +152,6 @@ FOREXMINER/
 ---
 ## 📜 Licencia
 Este repositorio se encuentra bajo una licencia de código abierto **MIT**. 
-Puedes usar, modificar y distribuir el código libremente para cualquier propósito.
+Puedes usar, modificar y distribuir el código libremente para cualquier propósito. Para obtener más información, consulta el archivo [LICENCIA MIT](LICENSE).
 
-Para obtener más información, consulta el archivo [LICENCIA MIT](LICENSE).
-
-⚠️ **Importante:** Este proyecto se desarrolló estrictamente con fines **académicos y educativos**.
-`ForexMiner` **no** proporciona asesoramiento financiero ni recomendaciones de inversión. Los usuarios son los únicos responsables de las decisiones que pudiesen tomar basándose en la información generada por el mismo.
+*ForexMiner* se desarrolla estrictamente con fines de **práctica** de Minería de Datos, sin proporcionar asesoramiento financiero ni recomendaciones de inversión.
