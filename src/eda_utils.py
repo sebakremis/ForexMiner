@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
 from typing import Optional
+import scipy.stats as stats
 
 def mostrar_asimetrias(df:pd.DataFrame):
     """
@@ -143,6 +144,82 @@ def top_correlaciones_objetivo(
 
     return res.reset_index(drop=True)
 
+
+# Función para calcular VCramer
+def cramers_v(var1: pd.Series, varObj: pd.Series) -> float:
+    # Align indexes and drop missing pairs so pd.crosstab never produces an empty table
+    df = pd.DataFrame({'v1': var1.to_numpy(), 'v2': varObj.to_numpy()}).dropna()
+    if df.empty:
+        return 0.0
+
+    v1, v2 = df['v1'], df['v2']
+
+    if pd.api.types.is_numeric_dtype(v1):
+        v1 = pd.qcut(v1, q=5, duplicates='drop')
+    if pd.api.types.is_numeric_dtype(v2):
+        v2 = pd.qcut(v2, q=5, duplicates='drop')
+
+    data = pd.crosstab(v1, v2).values
+
+    # Association requires at least a 2x2 contingency table
+    if data.size == 0 or data.shape[0] < 2 or data.shape[1] < 2:
+        return 0.0
+
+    return float(stats.contingency.association(data, method='cramer'))
+
+def rankear_variables(
+        X:pd.DataFrame,
+        y:pd.Series,
+        n_simulations:int=100,
+        percentil:int=95,
+        graficar:bool=True
+):
+    # Se crean n variables de ruido aleatorias y se computan su V de Cramer
+    rng = np.random.default_rng(seed=42)
+    random_scores = [
+        cramers_v(pd.Series(rng.uniform(0, 1, size=len(y)), index=y.index), y)
+        for _ in range(n_simulations)
+    ]
+
+    # Se toma el percentil como umbral de ruido estable
+    threshold = np.percentile(random_scores, percentil)
+
+    # Tabla de Cramer
+    tablaCramer = pd.DataFrame(X.apply(lambda x: cramers_v(x,y)),columns=['VCramer'])
+
+    # Se categorizan las variables basandose en el umbral
+    tablaCramer = tablaCramer.sort_values(by='VCramer', ascending=True)
+    tablaCramer['Status'] = np.where(
+        tablaCramer['VCramer'] > threshold, 'Above Noise', 'Below Noise'
+    )
+    if graficar:
+        fig = px.bar(
+            tablaCramer,
+            x='VCramer',
+            y=tablaCramer.index,
+            color='Status',
+            color_discrete_map={
+                'Above Noise': '#2E86C1',
+                'Below Noise': '#AAB7B8'
+            },
+            title=f"V de Cramer vs. Objetivo (Umbral de Ruido según percentil {percentil} de Monte Carlo)",
+            height=max(600, len(tablaCramer) * 22)
+        )
+
+        fig.update_yaxes(dtick=1, title="")
+        fig.add_vline(
+            x=threshold,
+            line_dash="dash",
+            line_color="#E74C3C",
+            annotation_text=f"Umbral de Ruido ({threshold:.4f})",
+            annotation_position="bottom right"
+        )
+        fig.show()
+    else:
+        return tablaCramer
+
+
+
 def pintar_violin_plots(
     df: pd.DataFrame, numeric_cols: list[str], target_col: str
 ):
@@ -188,24 +265,4 @@ def pintar_violin_plots(
         ax.set_xlabel(target_col, fontsize=11, fontweight="bold")
 
     plt.tight_layout()
-    plt.show()
-
-
-import scipy.stats as stats
-
-# Función para calcular VCramer
-def cramers_v(var1, varObj):
-    '''
-    Categoriza las variables en cuantiles para hallar la V de Cramer
-    '''
-
-    if not var1.dtypes.name == 'category':
-        #bins = min(5,var1.value_counts().count())
-        var1 = pd.qcut(var1, q = 5, duplicates='drop')
-    if not varObj.dtypes == 'category': #np.issubdtype(varObj, np.number):
-        #bins = min(5,varObj.value_counts().count())
-        varObj = pd.qcut(varObj, q = 5, duplicates='drop')
-
-    data = pd.crosstab(var1, varObj).values
-    vCramer = stats.contingency.association(data, method = 'cramer')
-    return vCramer
+    plt.show()    
