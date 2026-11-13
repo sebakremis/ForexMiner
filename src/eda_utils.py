@@ -171,9 +171,9 @@ def rankear_variables(
         X:pd.DataFrame,
         y:pd.Series,
         n_simulations:int=100,
-        percentil:int=95,
+        percentil:int=50,
         graficar:bool=True
-):
+)->pd.DataFrame:
     # Se crean n variables de ruido aleatorias y se computan su V de Cramer
     rng = np.random.default_rng(seed=42)
     random_scores = [
@@ -215,8 +215,8 @@ def rankear_variables(
             annotation_position="bottom right"
         )
         fig.show()
-    else:
-        return tablaCramer
+
+    return tablaCramer
 
 
 

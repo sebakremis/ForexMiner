@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Sequence
 from datetime import datetime
 import matplotlib.pyplot as plt
+import json
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
@@ -764,17 +765,18 @@ def curva_desempenio(
 
 
 # Predictores a excluir segun el par forex
-excluir_dict = {
-    'AUDUSD' : ['SPY_Volume_zscore_lag1_yeo', 'Oil_Volume_zscore_lag1_yeo', 'Gold_Volume_zscore_lag1_yeo'],  
-    'EURUSD' : ['Gold_acceleration_zscore_lag1', 'Gold_vol_ratio_lag1', 'Oil_vol_ratio_lag1', 'Gold_accel_diff_zscore_lag1'], 
-    'GBPUSD' : [], 
-    'USDCAD' : ['Oil_return_skew_lag1'],  
-    'USDCHF' : ['Gold_acceleration_zscore_lag1'],
-    'USDJPY' : []
-}
+def cargar_cols_filtrar()->dict:
+    fichero = Path(carpeta_datos) / "cols_filtrar.json"
+    try:
+        with open(fichero, "r", encoding="utf-8") as file:
+            excluir_dict = json.load(file)
+            return excluir_dict if isinstance(excluir_dict,dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
 
 # Predictores a eliminar para todos los pares
-excluir_cols = [
+filtro_general = [
 ]
 
 '''
@@ -787,8 +789,8 @@ def main(
         simbolo:str="EURUSD",
         evaluar:bool=False
 ):
-    
-    predictores_a_excluir = excluir_dict.get(simbolo,[]) + excluir_cols
+    cols_filtar = cargar_cols_filtrar()
+    predictores_a_excluir = cols_filtar.get(simbolo,[]) + filtro_general
     X_train, y_train, X_live, _, ultima_fecha = preprocesar_entrenamiento(par=simbolo, variables_a_excluir=predictores_a_excluir)
 
     # Inicializar modelo y entrenar
