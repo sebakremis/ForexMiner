@@ -189,3 +189,23 @@ def pintar_violin_plots(
 
     plt.tight_layout()
     plt.show()
+
+
+import scipy.stats as stats
+
+# Función para calcular VCramer
+def cramers_v(var1, varObj):
+    '''
+    Categoriza las variables en cuantiles para hallar la V de Cramer
+    '''
+
+    if not var1.dtypes.name == 'category':
+        #bins = min(5,var1.value_counts().count())
+        var1 = pd.qcut(var1, q = 5, duplicates='drop')
+    if not varObj.dtypes == 'category': #np.issubdtype(varObj, np.number):
+        #bins = min(5,varObj.value_counts().count())
+        varObj = pd.qcut(varObj, q = 5, duplicates='drop')
+
+    data = pd.crosstab(var1, varObj).values
+    vCramer = stats.contingency.association(data, method = 'cramer')
+    return vCramer
