@@ -15,12 +15,14 @@ Una vez procesados, normalizados y limpios, los datos son utilizados en la fase 
 
 El proyecto esta diseñado para realizar predicciones contemporáneas en t (semana en curso), luego de la apertura del lunes de los mercados de Nueva York.
 
-Cuenta con tres fases:
+Cuenta con tres fases principales:
 * *Extracción*: obtención de datos a través de 2 APIs gratuitas: `yfinance` y `fred` (la segunda requiere obtener una clave api, se gestiona en la pagina oficial de la Reserva Federal: https://fred.stlouisfed.org/docs/api/api_key.html). Las intrucciones para ingresar tu clave en el repositorio local se encuentran en el fichero `src/data_sources.examples.py`.
 * *Transformación*: tratamiento de valores inválidos, feature engineering, imputación de valores perdidos, escalado de variables con z-score, transformaciones logarítmicas y de yeo-johnson. Adicionalmente se calculan las variables lag, sobre aquellas que requieran ser desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
 * *Modelado*: aplicación de modelo  clasificador *RandomForest* con datos completos, prueba de validación con partición de series temporales, evaluación de resultados, exportación de datos y predicciones y módulo para la optimización de hiper-parámetros.
 
-Además el fichero `notebook_EDA.ipynb` ubicado en la raiz del proyecto permite realizar un análisis exploratorio de los datos transformados para cada par forex, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a las 3 clases de la variable objetivo.
+Opcionalmente, el módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruido para cada par forex. El umbral de ruido se define utilizando la V de Cramer, calculando el percentil de una serie de variables aleatorias (por defecto la mediana de 100 variables random). Dichas variables a excluir se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en la siguiente modelización.
+
+Por otro lado, el fichero `notebook_EDA.ipynb` ubicado en la raiz del proyecto permite realizar un análisis exploratorio de los datos transformados para cada par forex, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a las 3 clases de la variable objetivo.
 
 El mismo pipeline permite modelar los 6 cruces principales de divisas Forex contra el dólar estadounidense. Cada par de divisas cuenta con sus propios parámetros en el procesamiento de datos durante la fase de transformación.
 
@@ -63,6 +65,12 @@ Ejemplo para transformar solo el par  dólar vs franco suizo:
 ```bash
 python -m src.transform --simbolo usdchf
 ```
+
+- Módulo de filtrado (opcional):
+```bash
+python -m src.filtering
+```
+Genera el fichero de columnas 'ruidosas' para cada los pares forex, las cuales serán omitidas en la fase de modelado.
 
 - Fase de modelado:
 ```bash
@@ -107,12 +115,14 @@ FOREXMINER/
 │   ├── clean_data/                  # Almacena los datos depurados para cada par forex
 │   ├── evaluacion_modelos/          # Almacena los resultados obtenidos en el modelado
 │   ├── raw_data/                    # Sub-directorio para almacenar los datos crudos
+│   ├── cols_filtrar                 # Fichero que almacena el diccionario de columnas a excluir
 ├── src/                             # Sub-directorio con los módulos de funciones 
 │   ├── __init__.py                  # Fichero vacío, inicializa la carpeta como paquete
 │   ├── config.py                    # Configuración global del proyecto 
 │   ├── data_sources.example.py      # Fichero ejemplo para gestionar la clave API de Fred
 │   ├── eda_utils.py                 # Funciones para el notebook de análisis exploratorio de datos
 │   ├── extract.py                   # Módulo de la fase de extracción
+│   ├── filtering.py                 # Módulo opcional para el filtrado de columnas
 │   ├── modeling.py                  # Módulo de la fase de modelado
 │   └── transform.py                 # Módulo de la fase transformación
 ├── .gitignore                       # Reglas de git ignore

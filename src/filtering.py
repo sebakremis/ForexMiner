@@ -1,7 +1,7 @@
 '''
 src.filtering.py
 
-Modulo opcional para filtar variables debajo del umbral de ruido
+Modulo opcional para filtar variables debajo del umbral de ruido.
 '''
 import pandas as pd
 import json
@@ -18,6 +18,10 @@ from pathlib import Path
 def filtrar_cols(
         par:str
 )->list:
+    '''
+    Filtra las columnas de un par de divisas que se encuentran por debajo del umbral de ruido.
+    de acuerdo a la tabla de Cramer. Devuelve una lista con los nombres de las columnas a filtrar.
+    '''
     # Carga y preparacion de datos
     df_clean = cargar_datos_clean(simbolo=par)   
     df_filtrado = filtrar_pares_restantes(df_clean, par)
@@ -46,6 +50,9 @@ def filtrar_cols(
     return cols_filtrar
 
 def main():
+    '''
+    Genera un fichero JSON con las columnas a filtrar para cada par de divisas.
+    '''
     fichero = Path(carpeta_datos) / "cols_filtrar.json"
     datos = {}
     for pair in forex_cols:
