@@ -70,7 +70,7 @@ python -m src.transform --simbolo usdchf
 ```bash
 python -m src.filtering
 ```
-Genera el fichero de columnas 'ruidosas' para cada los pares forex, las cuales serán omitidas en la fase de modelado.
+Genera el fichero de columnas 'ruidosas' para cada par forex, las cuales serán omitidas en la fase de modelado.
 
 - Fase de modelado:
 ```bash
