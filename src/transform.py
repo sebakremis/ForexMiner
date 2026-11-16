@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import List, Dict, TypedDict, Sequence
 import argparse
 
-from sklearn.preprocessing import PowerTransformer
+from scipy.stats import yeojohnson, yeojohnson_normmax
 
 from src.config import (carpeta_datos, forex_cols,
-                        otros_activos_cols, bond_cols
+                        otros_activos_cols, yfinance_cols,
+                        bond_cols
                         )
 
 EPSILON = 1e-8
@@ -54,6 +55,25 @@ def preprocesar_precios()->pd.DataFrame:
     cols_num = df_precios.select_dtypes(include="number").columns
     df_precios[cols_num] = df_precios[cols_num].mask(df_precios[cols_num] < 0)
     return df_precios
+
+
+def calcular_yield_spreads(df:pd.DataFrame):
+    '''
+    Calcula la diferencia entre las tasas de la moneda base y de cotizacion.
+    Devuelve la variable escalada por el z-score.
+    '''
+    df_out = df.copy()
+    columnas_originales = df_out.columns.tolist()
+
+    for pair in forex_cols:
+        base_currency = pair[:3]
+        quote_currency = pair[3:6]
+
+        serie_yield_spread = df_out[f"{base_currency}_yield_avg"] - df_out[f"{quote_currency}_yield_avg"]
+        df_out[f"{pair}_yield_spread_zscore"] = calcular_zscore(serie_yield_spread, usar_mad=False, exponencial=True, asumir_media_cero=False)
+
+    df_out.drop(columns=columnas_originales, inplace=True)
+    return df_out
 
 
 def preprocesar_macro()->tuple[pd.DataFrame, pd.DataFrame]:
@@ -124,30 +144,58 @@ def calcular_zscore(
     periodo: int = 20,
     min_periodos: int | None = None,
     asumir_media_cero: bool = False,
-    exponencial: bool = True
+    exponencial: bool = True,
+    usar_mad: bool = False,
 ) -> pd.Series:
-    """Normaliza la vela actual (t) utilizando los parámetros históricos
+    """Normaliza la vela actual (t) utilizando parámetros históricos hasta (t-1)."""
+    if min_periodos is None:
+        min_periodos = periodo
 
-    calculados hasta la vela anterior (t-1).
-    """
-    # 1. Parámetros calculados estrictamente hasta t-1
-    if exponencial:
-        ventana = serie.shift(1).ewm(
-            span=periodo, min_periods=min_periodos, adjust=False
-        )
+    # Desplazamiento estricto para evitar lookahead bias
+    serie_previa = serie.shift(1)
+
+    if usar_mad:
+        # MAD requiere ventana rolling (pandas no soporta ewm.median() nativamente)
+        if asumir_media_cero:
+            centro = 0.0
+            mad = (
+                serie_previa.abs()
+                .rolling(window=periodo, min_periods=min_periodos)
+                .median()
+            )
+        else:
+            centro = serie_previa.rolling(
+                window=periodo, min_periods=min_periodos
+            ).median()
+            # Nota: calcula la desviación respecto a la mediana de cada punto histórico
+            mad = (
+                (serie_previa - centro)
+                .abs()
+                .rolling(window=periodo, min_periods=min_periodos)
+                .median()
+            )
+
+        escala = 1.4826 * mad
+        zscore = (serie - centro) / (escala + EPSILON)
+
     else:
-        ventana = serie.shift(1).rolling(
-            window=periodo, min_periods=min_periodos
-        )
+        # calculo Mean / Std
+        if exponencial:
+            ventana = serie_previa.ewm(
+                span=periodo, min_periods=min_periodos, adjust=False
+            )
+        else:
+            ventana = serie_previa.rolling(
+                window=periodo, min_periods=min_periodos
+            )
 
-    desvio = ventana.std()
+        desvio = ventana.std()
 
-    # 2. La serie en curso (t) se compara contra la distribución previa (t-1)
-    if asumir_media_cero:
-        zscore = serie / (desvio + EPSILON)
-    else:
-        promedio = ventana.mean()
-        zscore = (serie - promedio) / (desvio + EPSILON)
+        if asumir_media_cero:
+            zscore = serie / (desvio + EPSILON)
+        else:
+            promedio = ventana.mean()
+            zscore = (serie - promedio) / (desvio + EPSILON)
 
     zscore.name = f"{serie.name}_zscore" if serie.name else "zscore"
     return zscore
@@ -242,16 +290,17 @@ def calcular_metricas_precios(
 
         # Velocidad media del precio para el periodo largo (retorno normalizado por longitud del periodo)
         vel_larga = log_precios.diff(periodo_largo) / periodo_largo
+        df_out[f"{simbolo}_vel_zscore"] = calcular_zscore(vel_larga, periodo=periodo_largo, usar_mad=True, asumir_media_cero=True)
 
         # Aceleracion: tasa de cambio de la velocidad
         accel_larga = vel_larga.diff(periodo_largo) / periodo_largo
-        df_out[f"{simbolo}_acceleration_zscore"] = calcular_zscore(accel_larga)
+        df_out[f"{simbolo}_acceleration_zscore"] = calcular_zscore(accel_larga, periodo=periodo_largo, usar_mad=True, asumir_media_cero=True)
 
         # Con los retornos logaritmicos se calcula la volatilidad direccional
-        df_out[f"{simbolo}_vol_directional"] = calcular_volatilidad_direccional(retorno=retorno_1p)
+        df_out[f"{simbolo}_vol_directional"] = calcular_volatilidad_direccional(retorno=retorno_1p, span=periodo_largo)
 
         # Se escala el retorno por su z-score, asumiendo media cero
-        df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno_1p, asumir_media_cero=True)
+        df_out[f"{simbolo}_return_zscore"] = calcular_zscore(retorno_1p, periodo=periodo_largo, usar_mad=True, asumir_media_cero=True)
         
         # Se calcula la asimetria sobre los retornos
         df_out[f"{simbolo}_return_skew"] = calcular_asimetria(serie=retorno_1p, periodo=periodo_largo)
@@ -261,7 +310,7 @@ def calcular_metricas_precios(
             vel_corta = log_precios.diff(periodo_corto) / periodo_corto           
             accel_corta = vel_corta.diff(periodo_corto) / periodo_corto            
             diferencia_aceleraciones = accel_corta - accel_larga            
-            df_out[f"{simbolo}_accel_diff_zscore"] = calcular_zscore(diferencia_aceleraciones)
+            df_out[f"{simbolo}_accel_diff_zscore"] = calcular_zscore(diferencia_aceleraciones, periodo=periodo_largo, usar_mad=True, asumir_media_cero=True)
 
             # Ratio de volatilidad: ratio entre desvio corto y largo
             desvio_corto = retorno_1p.rolling(window=periodo_corto).std()           
@@ -301,16 +350,67 @@ def calcular_hl_spread(
         df:pd.DataFrame,
         simbolos:list[str]
 )->pd.DataFrame:
-    df_out = df.copy()
+    nuevas_columnas = {}
     for simbolo in simbolos:
         columna_high = f"{simbolo}_High"
         columna_low = f"{simbolo}_Low"
 
-        # High - Low Spread escalado por z-score
-        spread = calcular_pct_diff(df_out[columna_high], df_out[columna_low])
-        df_out[f"{simbolo}_HL_spread_zscore"] = calcular_zscore(spread)     
+        # High - Low Spread: diferencia porcentual entre el precio máximo y mínimo
+        spread = calcular_pct_diff(df[columna_high], df[columna_low])
+
+        # Proteger contra bad ticks donde High < Low
+        nuevas_columnas[f"{simbolo}_HL_spread"] = spread.clip(lower=0.0)
+   
+
+    return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
+
+
+def calcular_open_gap(
+        df:pd.DataFrame,
+        simbolos:list[str],
+        periodo:int=20
+)->pd.DataFrame:
+    df_out = df.copy()
+    for simbolo in simbolos:
+        columna_open = f"{simbolo}_Open"
+        columna_close = f"{simbolo}_Close"
+
+        # Open Gap: diferencia porcentual entre el cierre anterior y la apertura actual
+        open_gap = calcular_pct_diff(df_out[columna_open], df_out[columna_close], lag_base=1)
+
+        # Se calcula el z-score y se complimen colas extremas
+        z_gap = calcular_zscore(
+            serie=open_gap,
+            periodo=periodo,
+            usar_mad=False, # Obligatorio: MAD sera 0 si mas de la mitad de las velas no tienen gap
+            exponencial=True, # Adaptacion rapida a cambios
+            asumir_media_cero=True, # preserva el signo del gap
+        )
+        df_out[f"{simbolo}_Open_gap_zscore"] = np.arcsinh(z_gap)
+
+        # Asimetria del open gap
+        df_out[f"{simbolo}_Open_gap_skew"] = calcular_asimetria(open_gap, periodo=periodo)
 
     return df_out
+    
+
+def calcular_log_rvol(
+    serie_vol: pd.Series, periodo: int = 20, min_periodos: int | None = None
+) -> pd.Series:
+    """Calcula el logaritmo del Volumen Relativo (RVOL) estrictamente causal."""
+    if min_periodos is None:
+        min_periodos = periodo
+
+    # Mediana histórica hasta t-1 para evitar distorsión por spikes previos
+    vol_base = (
+        serie_vol.shift(1)
+        .rolling(window=periodo, min_periods=min_periodos)
+        .median()
+    )
+
+    # RVOL centrado en 1.0 -> log(RVOL) centrado en 0.0
+    rvol = (serie_vol + 1e-8) / (vol_base + 1e-8)
+    return np.log(rvol)
 
 
 def aplicar_lag(
@@ -349,12 +449,12 @@ def obtener_features_precios(
         rango:tuple
         )->pd.DataFrame:
 
-    df_precios = df.copy()
-    columnas_originales = df_precios.columns.tolist()
+    df_features = df.copy()
+    columnas_originales = df_features.columns.tolist()
     # Metricas sobre precios: forex
 
-    df_precios = calcular_metricas_precios(
-        df=df_precios, 
+    df_features = calcular_metricas_precios(
+        df=df_features, 
         simbolos=forex_cols,
         periodo_largo=periodo_largo[0],
         periodo_corto=periodo_corto[0],
@@ -363,8 +463,8 @@ def obtener_features_precios(
         )
 
     # Otros activos
-    df_precios = calcular_metricas_precios(
-        df=df_precios,
+    df_features = calcular_metricas_precios(
+        df=df_features,
         simbolos=otros_activos_cols,
         periodo_largo=periodo_largo[1],
         periodo_corto=periodo_corto[1],
@@ -377,16 +477,25 @@ def obtener_features_precios(
         columnas_target=columnas_originales,
         cadena="Volume"
     )
-    df_volumen_zscore = df_precios[columnas_volumen].apply(calcular_zscore)
-    df_volumen_zscore.columns = [f"{col}_zscore" for col in df_volumen_zscore.columns]
+    nuevas_cols = {}
 
-    # Metricas sobre precios extremos High - Low para pares forex
-    df_precios = calcular_hl_spread(df=df_precios, simbolos=forex_cols)   
+    for col in columnas_volumen:
+        nuevas_cols[f"{col}_relative_log"] = calcular_log_rvol(
+            serie_vol=df_features[col], periodo=periodo_largo[1]
+        )
+
+    df_features = pd.concat(
+        [df_features, pd.DataFrame(nuevas_cols, index=df_features.index)], axis=1
+    )
+
+    # Metricas sobre precios extremos High - Low para pares forex y otros activos
+    df_features = calcular_hl_spread(df=df_features, simbolos=yfinance_cols)
+
+    # Open gap para otros activos (se evita aplicar sobre forex para evitar fuga de datos)
+    df_features = calcular_open_gap(df=df_features, simbolos=otros_activos_cols, periodo=periodo_largo[1])      
 
     # Eliminar columnas originales (absolutas)
-    df_precios.drop(columns=columnas_originales, inplace=True)
-
-    df_features = pd.concat([df_precios,df_volumen_zscore], axis=1)
+    df_features.drop(columns=columnas_originales, inplace=True)
 
     # Columnas restantes: relativas
     columnas_relativas = df_features.columns.tolist()
@@ -466,25 +575,6 @@ def imputar_interpolacion(
     return df_out
 
 
-def calcular_yield_spreads(df:pd.DataFrame):
-    '''
-    Calcula la diferencia entre las tasas de la moneda base y de cotizacion.
-    Devuelve la variable escalada por el z-score.
-    '''
-    df_out = df.copy()
-    columnas_originales = df_out.columns.tolist()
-
-    for pair in forex_cols:
-        base_currency = pair[:3]
-        quote_currency = pair[3:6]
-
-        serie_yield_spread = df_out[f"{base_currency}_yield_avg"] - df_out[f"{quote_currency}_yield_avg"]
-        df_out[f"{pair}_yield_spread_zscore"] = calcular_zscore(serie_yield_spread)
-
-    df_out.drop(columns=columnas_originales, inplace=True)
-    return df_out
-
-
 def obtener_features_macro(
         df_b:pd.DataFrame,
         df_m:pd.DataFrame,
@@ -494,14 +584,11 @@ def obtener_features_macro(
     df_bonds_weekly = df_b.copy()
     df_macro = df_m.copy()
 
-    # Se calculan las asimetrias de los yield spreads
+    # Se calculan las velocidades y asimetrias de los yield spreads
     columnas_bonos = df_bonds_weekly.columns.to_list()
     for col in columnas_bonos:
         df_bonds_weekly[f"{col}_skew"] = calcular_asimetria(df_bonds_weekly[col], periodo=periodo_skew)
-
-    # Tasa de cambio (velocidad) del USDCAD
-    columna_usdcad = 'USDCAD_yield_spread_zscore'
-    df_bonds_weekly[f"{columna_usdcad}_vel"] = df_bonds_weekly[columna_usdcad].diff(periodo_variaciones) / periodo_variaciones
+        df_bonds_weekly[f"{col}_vel"] = df_bonds_weekly[col].diff(periodo_variaciones) / periodo_variaciones
    
     # Se conserva VIX en nivel como predictor
     df_features_daily = pd.DataFrame(index=df_macro.index)
@@ -595,23 +682,48 @@ def transformar_log(df: pd.DataFrame, cols: list, calculation_1p: bool = False) 
     return df_out
 
 
-def transformar_yeo(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+def transformar_yeo(
+    df: pd.DataFrame,
+    columnas: list[str],
+    min_periodos: int = 100,
+    step: int = 20,
+    reemplazar: bool = True,
+) -> pd.DataFrame:
+    """Aplica Yeo-Johnson de forma estrictamente causal (ajustando lambda hasta t-1)
+
+    sobre las columnas indicadas y les agrega el sufijo '_yj'.
     """
-    Aplica la transformación de Yeo-Johnson a las columnas especificadas del DataFrame.
-    Se crea una nueva columna con el sufijo '_yeo' y se elimina la columna original.
-    """
-    df_out = df.copy()
+    nuevas_cols = {}
 
-    # Inicializar el PowerTransformer
-    pt = PowerTransformer(method='yeo-johnson', standardize=True)
+    for col in columnas:
+        if col not in df.columns:
+            continue
 
-    # Se aplica la función y elimina la columna original
-    for col in cols:
-        df_out[f'{col}_yeo'] = pt.fit_transform(df_out[[col]])
-        df_out.drop(col, axis=1, inplace=True)
-        
-    return df_out
+        vals = df[col].to_numpy(dtype=float)
+        out = np.full(len(vals), np.nan)
+        lmbda = None
 
+        for i in range(min_periodos, len(vals)):
+            # Re-estimar lambda cada `step` velas usando datos estrictamente hasta i-1
+            if lmbda is None or (i - min_periodos) % step == 0:
+                hist = vals[:i]
+                hist = hist[~np.isnan(hist)]
+                if len(hist) >= min_periodos:
+                    lmbda = yeojohnson_normmax(hist)
+
+            if lmbda is not None and not np.isnan(vals[i]):
+                out[i] = yeojohnson(vals[i], lmbda)
+
+        nuevas_cols[f"{col}_yj"] = out
+
+    df_yj = pd.DataFrame(nuevas_cols, index=df.index)
+
+    if reemplazar:
+        cols_existentes = [c for c in columnas if c in df.columns]
+        df_base = df.drop(columns=cols_existentes)
+        return pd.concat([df_base, df_yj], axis=1)
+
+    return pd.concat([df, df_yj], axis=1)
 
 # Funcion de procesamiento con los parametros de cada par
 
@@ -741,11 +853,15 @@ def post_procesar_par(
 
     # Transformaciones yeo-johnson
     cols_hl_spread = encontrar_columnas(columnas_features, f"_HL_spread_")
-    cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
-    col_vix_vel = encontrar_columnas(columnas_features, f"VIX_vel_")
 
-    columnas_yeo = cols_hl_spread + cols_volume + col_vix_vel
-    df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
+    columnas_yeo = cols_hl_spread 
+    df_transform = transformar_yeo(
+        df=df_transform,
+        columnas=columnas_yeo,
+        min_periodos=100,
+        step=20,
+        reemplazar=True,
+    )
 
     # Se eliminan posibles missings luego de transformar
     df_transform.dropna(inplace=True)

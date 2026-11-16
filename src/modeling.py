@@ -47,23 +47,28 @@ def cargar_datos_clean(
         return pd.DataFrame()
 
 
-def filtrar_targets_restantes(
+def filtrar_pares_restantes(
         df:pd.DataFrame,
         target:str
 )->pd.DataFrame:
     df_out = df.copy()
     columnas_clean = df_out.columns.tolist()
    
-    simbolos_restantes = [col for col in forex_cols if col != target]
+    simbolos_restantes = [simbolo for simbolo in forex_cols if simbolo != target]
+    columnas_a_eliminar = []
+    for simbolo in simbolos_restantes:
+        columnas_a_eliminar.extend(encontrar_columnas(columnas_clean, simbolo))
 
+    '''
     retornos_restantes = []
     for col in simbolos_restantes:
         col_name = f"{col}_return_zscore"
         if col_name in columnas_clean:
             retornos_restantes.append(col_name)
+    '''
 
     # Se eliminan las demas columnas
-    return df_out.drop(columns=retornos_restantes, errors='ignore')
+    return df_out.drop(columns=columnas_a_eliminar, errors='ignore')
 
 # Funciones de pre-procesamiento
 
@@ -184,7 +189,7 @@ def preprocesar_entrenamiento(
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean(simbolo=par)
-    df = filtrar_targets_restantes(df,par)
+    df = filtrar_pares_restantes(df,par)
 
     # Separar datos de entrenamiento y datos live
     ultima_fecha = df.index.max()
@@ -306,7 +311,7 @@ def preprocesar_evaluacion(
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean(simbolo=par)
-    df = filtrar_targets_restantes(df,par)
+    df = filtrar_pares_restantes(df,par)
 
     # Primero se remueven los datos live (ultima fecha contemporanea)
     ultima_fecha = df.index.max()

@@ -55,7 +55,7 @@ def extraer_yfinance(
         )
 
     # Filtrar columnas no deseadas a nivel de atributo
-    columnas_innecesarias = {"Dividends", "Stock Splits", "Capital Gains", "Open"}
+    columnas_innecesarias = {"Dividends", "Stock Splits", "Capital Gains"}
     atributos_validos = [
         col
         for col in df_batch.columns.levels[0]
