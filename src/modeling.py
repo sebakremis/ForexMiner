@@ -47,36 +47,23 @@ def cargar_datos_clean(
         return pd.DataFrame()
 
 
-def filtrar_pares_restantes(
+def filtrar_targets_restantes(
         df:pd.DataFrame,
         target:str
 )->pd.DataFrame:
-    columnas_clean = df.columns.tolist()
+    df_out = df.copy()
+    columnas_clean = df_out.columns.tolist()
    
     simbolos_restantes = [col for col in forex_cols if col != target]
 
-    features_a_mantener = [
-        '_return_zscore_lag1',
-        '_std_lag1_log',
-        '_return_skew_lag1',
-        '_gap_skew_lag1',
-
-    ]
-    cols_permitidas = {
-        f"{s}{feat}"
-        for s in simbolos_restantes
-        for feat in features_a_mantener
-    }
+    retornos_restantes = []
+    for col in simbolos_restantes:
+        col_name = f"{col}_return_zscore"
+        if col_name in columnas_clean:
+            retornos_restantes.append(col_name)
 
     # Se eliminan las demas columnas
-    cols_drop = [
-        col
-        for s in simbolos_restantes
-        for col in encontrar_columnas(columnas_clean, s)
-        if col not in cols_permitidas
-    ]
-
-    return df.drop(columns=cols_drop, errors='ignore')
+    return df_out.drop(columns=retornos_restantes, errors='ignore')
 
 # Funciones de pre-procesamiento
 
@@ -197,7 +184,7 @@ def preprocesar_entrenamiento(
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean(simbolo=par)
-    df = filtrar_pares_restantes(df,par)
+    df = filtrar_targets_restantes(df,par)
 
     # Separar datos de entrenamiento y datos live
     ultima_fecha = df.index.max()
@@ -205,7 +192,7 @@ def preprocesar_entrenamiento(
 
     # Se crea la variable categorica a partir del dataset de entrenamiento
     # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{par}_intra_weekly"
+    objetivo = f"{par}_return_zscore"
     objetivo_cat = f"{objetivo}_cat"
 
     df_train, tabla_bins = categorizar_en_cuantiles(
@@ -220,7 +207,6 @@ def preprocesar_entrenamiento(
 
     # Separar predictores y variable objetivo
     variables_a_excluir.extend([objetivo])
-
 
     X_train, y_train, X_live, _ = separar_predictores_y_objetivo(
         df_train=df_train, 
@@ -320,7 +306,7 @@ def preprocesar_evaluacion(
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean(simbolo=par)
-    df = filtrar_pares_restantes(df,par)
+    df = filtrar_targets_restantes(df,par)
 
     # Primero se remueven los datos live (ultima fecha contemporanea)
     ultima_fecha = df.index.max()
@@ -335,7 +321,7 @@ def preprocesar_evaluacion(
 
     # Se crea la variable categorica a partir del dataset de entrenamiento
     # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{par}_intra_weekly"
+    objetivo = f"{par}_return_zscore"
     objetivo_cat = f"{objetivo}_cat"
 
     df_train, tabla_bins = categorizar_en_cuantiles(
@@ -776,8 +762,7 @@ def cargar_cols_filtrar()->dict:
 
 
 # Predictores a eliminar para todos los pares
-filtro_general = [
-]
+filtro_general = []
 
 '''
 Bloque principal

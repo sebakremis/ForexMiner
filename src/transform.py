@@ -313,26 +313,6 @@ def calcular_hl_spread(
     return df_out
 
 
-def calcular_metricas_intrasemanales(
-        df:pd.DataFrame,
-        simbolos:list[str]
-)->pd.DataFrame:
-    df_out = df.copy()
-    for simbolo in simbolos:
-        # Gap de apertura: diferencia entre apertura y cierre anterior
-        open_gap = calcular_pct_diff(df_out[f"{simbolo}_Open"], df_out[f"{simbolo}_Close"], lag_base=1)
-        df_out[f"{simbolo}_open_gap_zscore"] = calcular_zscore(open_gap)
-
-        # Asimetria del open gap
-        df_out[f"{simbolo}_gap_skew"] = calcular_asimetria(df_out[f"{simbolo}_open_gap_zscore"])
-
-        # Diferencia entre el cierre y la apertura semanal (para construir target)
-        intra_semanal = calcular_pct_diff(df_out[f"{simbolo}_Close"], df_out[f"{simbolo}_Open"], lag_base=0)
-        df_out[f"{simbolo}_intra_weekly"] = calcular_zscore(intra_semanal)
-
-    return df_out
-
-
 def aplicar_lag(
         df:pd.DataFrame,
         columnas:List[str],
@@ -401,10 +381,7 @@ def obtener_features_precios(
     df_volumen_zscore.columns = [f"{col}_zscore" for col in df_volumen_zscore.columns]
 
     # Metricas sobre precios extremos High - Low para pares forex
-    df_precios = calcular_hl_spread(df=df_precios, simbolos=forex_cols)
-
-    # Metricas intrasemanales: Rendimiento semanal entre precios Close y Open (target continuo)
-    df_precios = calcular_metricas_intrasemanales(df=df_precios, simbolos=forex_cols)   
+    df_precios = calcular_hl_spread(df=df_precios, simbolos=forex_cols)   
 
     # Eliminar columnas originales (absolutas)
     df_precios.drop(columns=columnas_originales, inplace=True)
@@ -416,16 +393,18 @@ def obtener_features_precios(
 
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
 
-    # Se excluyen las variables intrasemanales
-    cols_gap = encontrar_columnas(columnas_relativas, "_open_gap")
-    cols_intra = encontrar_columnas(columnas_relativas, "_intra_weekly")
-    cols_exclude = set(cols_gap+cols_intra)
+    # Retornos forex: se mantienen los retornos sin lag para usar como target (quitar_original=False)
+    cols_retorno_fx = []
+    for col in forex_cols:
+        cols_retorno_fx.append(f"{col}_return_zscore")
 
-    # Resto de las columnas: se aplica el lag y se eliminan las originales
+    df_features = aplicar_lag(df=df_features, columnas=cols_retorno_fx, quitar_original=False)
+
+    # Resto de las columnas: se aplica el lag y se eliminan las originales (quitar_original=True)
+    cols_exclude = set(cols_retorno_fx)
     variables_restantes = [col for col in columnas_relativas if col not in cols_exclude]
 
     df_features = aplicar_lag(df=df_features, columnas=variables_restantes, quitar_original=True)    
-
 
     return df_features
 
@@ -757,16 +736,15 @@ def post_procesar_par(
     columnas_vol_directional = encontrar_columnas(columnas_features, f"_vol_directional_")
     
 
-    columnas_log = columnas_std + columnas_vol_directional + []
+    columnas_log = columnas_std + columnas_vol_directional
     df_transform = transformar_log(df, cols=columnas_log)
 
     # Transformaciones yeo-johnson
-    cols_gap = encontrar_columnas(columnas_features, f"_open_gap")
     cols_hl_spread = encontrar_columnas(columnas_features, f"_HL_spread_")
     cols_volume = encontrar_columnas(columnas_features, f"_Volume_")
     col_vix_vel = encontrar_columnas(columnas_features, f"VIX_vel_")
 
-    columnas_yeo = cols_gap + cols_hl_spread + cols_volume + col_vix_vel
+    columnas_yeo = cols_hl_spread + cols_volume + col_vix_vel
     df_transform = transformar_yeo(df=df_transform, cols=columnas_yeo)
 
     # Se eliminan posibles missings luego de transformar

@@ -55,7 +55,7 @@ def extraer_yfinance(
         )
 
     # Filtrar columnas no deseadas a nivel de atributo
-    columnas_innecesarias = {"Dividends", "Stock Splits", "Capital Gains"}
+    columnas_innecesarias = {"Dividends", "Stock Splits", "Capital Gains", "Open"}
     atributos_validos = [
         col
         for col in df_batch.columns.levels[0]
@@ -101,7 +101,7 @@ def extraer_fred(
     Parameters
     ----------
     series_map : Dict[str, str], optional
-        Diccionario {series_id_fred: nombre_columna}. Si es None usa DEFAULT_GOLD_MACRO_SERIES.
+        Diccionario {series_id_fred: nombre_columna}. Si es None usa FRED_SERIES.
     start_date : str
         Fecha inicial de consulta (formato YYYY-MM-DD).
     end_date : str, optional

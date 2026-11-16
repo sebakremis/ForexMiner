@@ -6,7 +6,7 @@ Modulo opcional para filtar variables debajo del umbral de ruido.
 import pandas as pd
 import json
 from src.modeling import (
-    cargar_datos_clean, filtrar_pares_restantes, separar_train_test, 
+    cargar_datos_clean, filtrar_targets_restantes, separar_train_test, 
     categorizar_en_cuantiles
     )
 from src.eda_utils import rankear_variables
@@ -24,12 +24,12 @@ def filtrar_cols(
     '''
     # Carga y preparacion de datos
     df_clean = cargar_datos_clean(simbolo=par)   
-    df_filtrado = filtrar_pares_restantes(df_clean, par)
+    df_filtrado = filtrar_targets_restantes(df_clean, par)
     ultima_fecha = df_filtrado.index.max()
     df_train, _ = separar_train_test(df=df_filtrado, fecha=ultima_fecha)
 
     # Crear variable objetivo categorica
-    objetivo_cont = f"{par}_intra_weekly"
+    objetivo_cont = f"{par}_return_zscore"
     objetivo_cat = f"{objetivo_cont}_cat"
     df_train, _ = categorizar_en_cuantiles(
     df_train, 
