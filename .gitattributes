@@ -1,0 +1,3 @@
+# Set default behavior to automatically normalize line endings.
+# for linux and macOS, use LF line endings. For Windows, use CRLF line endings.
+* text=auto eol=lf
