@@ -72,7 +72,7 @@ def calcular_yield_spreads(df:pd.DataFrame):
         serie_yield_spread = df_out[f"{base_currency}_yield_avg"] - df_out[f"{quote_currency}_yield_avg"]
         df_out[f"{pair}_yield_spread_zscore"] = calcular_zscore(serie_yield_spread, usar_mad=False, exponencial=True, asumir_media_cero=False)
 
-    df_out.drop(columns=columnas_originales, inplace=True)
+    df_out = df_out.drop(columns=columnas_originales)
     return df_out
 
 
@@ -87,7 +87,7 @@ def preprocesar_macro()->tuple[pd.DataFrame, pd.DataFrame]:
 
     # Separar columnas de rendimientos de bonos
     df_bonds = df_macro[bond_cols]
-    df_macro.drop(columns=bond_cols, inplace=True)
+    df_macro = df_macro.drop(columns=bond_cols)
 
     # Agrupa por año y mes natural y aplica la recolocación en el último registro disponible
     df_bonds = df_bonds.groupby(
@@ -278,12 +278,13 @@ def calcular_metricas_precios(
 
     '''
     df_out = df.copy()
-    for simbolo in simbolos:        
+
+    for simbolo in simbolos:
         # Retornos logaritmicos para 1 periodo
         columna_precio = f"{simbolo}_Close"
         log_precios = np.log(df_out[columna_precio])
         retorno_1p = log_precios.diff()             
-        
+
         # Desvio estandar sobre el periodo largo
         desvio_col = f"{simbolo}_std"
         df_out[desvio_col] = retorno_1p.rolling(window=periodo_largo, min_periods=min_periodos).std()
@@ -330,7 +331,7 @@ def calcular_metricas_precios(
 
             # Se calcula la posicion dentro del rango [-1 (Close igual al Minimo), 1 (Close igual al Maximo)]
             df_out[f"{simbolo}_range{periodo_rango}_position"] = ((df_out[columna_precio] - minimo) - (maximo - df_out[columna_precio])) / (maximo-minimo)
-              
+                
         # Medias moviles
         if medias:
             periodo_sma_corta = medias[0]
@@ -341,7 +342,7 @@ def calcular_metricas_precios(
             # Diferencia porcentual entre medias
             df_out[f"{simbolo}_sma{periodo_sma_corta}_pct_diff_sma{periodo_sma_larga}"] = calcular_pct_diff(
                 sma_corta,
-                sma_larga)   
+                sma_larga)     
 
     return df_out
 
@@ -378,7 +379,7 @@ def calcular_open_gap(
         # Open Gap: diferencia porcentual entre el cierre anterior y la apertura actual
         open_gap = calcular_pct_diff(df_out[columna_open], df_out[columna_close], lag_base=1)
 
-        # Se calcula el z-score y se complimen colas extremas
+        # Se calcula el z-score y se comprimen colas extremas
         z_gap = calcular_zscore(
             serie=open_gap,
             periodo=periodo,
@@ -443,6 +444,7 @@ def encontrar_columnas(
 
 def obtener_features_precios(
         df:pd.DataFrame,
+        simbolo:str,
         periodo_largo:tuple[int, int],
         periodo_corto:tuple,
         medias:tuple,
@@ -451,11 +453,11 @@ def obtener_features_precios(
 
     df_features = df.copy()
     columnas_originales = df_features.columns.tolist()
-    # Metricas sobre precios: forex
 
+    # Metricas sobre precios: par forex
     df_features = calcular_metricas_precios(
         df=df_features, 
-        simbolos=forex_cols,
+        simbolos=[simbolo],
         periodo_largo=periodo_largo[0],
         periodo_corto=periodo_corto[0],
         medias=medias[0], 
@@ -488,14 +490,14 @@ def obtener_features_precios(
         [df_features, pd.DataFrame(nuevas_cols, index=df_features.index)], axis=1
     )
 
-    # Metricas sobre precios extremos High - Low para pares forex y otros activos
-    df_features = calcular_hl_spread(df=df_features, simbolos=yfinance_cols)
+    # Metricas sobre precios extremos High - Low para el simbolo forex
+    df_features = calcular_hl_spread(df=df_features, simbolos=[simbolo])
 
     # Open gap para otros activos (se evita aplicar sobre forex para evitar fuga de datos)
     df_features = calcular_open_gap(df=df_features, simbolos=otros_activos_cols, periodo=periodo_largo[1])      
 
     # Eliminar columnas originales (absolutas)
-    df_features.drop(columns=columnas_originales, inplace=True)
+    df_features = df_features.drop(columns=columnas_originales)
 
     # Columnas restantes: relativas
     columnas_relativas = df_features.columns.tolist()
@@ -503,14 +505,13 @@ def obtener_features_precios(
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
 
     # Retornos forex: se mantienen los retornos sin lag para usar como target (quitar_original=False)
-    cols_retorno_fx = []
-    for col in forex_cols:
-        cols_retorno_fx.append(f"{col}_return_zscore")
-
-    df_features = aplicar_lag(df=df_features, columnas=cols_retorno_fx, quitar_original=False)
+    col_return = f"{simbolo}_return_zscore"
+    df_features = aplicar_lag(df=df_features, columnas=[col_return], quitar_original=False)
 
     # Resto de las columnas: se aplica el lag y se eliminan las originales (quitar_original=True)
-    cols_exclude = set(cols_retorno_fx)
+    # Se exluyen columnas open gap al ser conocidos luego de la apertura semanal
+    cols_open_gap = encontrar_columnas(columnas_relativas, cadena="_Open_gap")
+    cols_exclude = set(cols_open_gap + [col_return])
     variables_restantes = [col for col in columnas_relativas if col not in cols_exclude]
 
     df_features = aplicar_lag(df=df_features, columnas=variables_restantes, quitar_original=True)    
@@ -677,7 +678,7 @@ def transformar_log(df: pd.DataFrame, cols: list, calculation_1p: bool = False) 
     # Se aplica la función y elimina la columna original
     for col in cols:
         df_out[f'{col}{sufijo}'] = funcion_log(df_out[col])
-        df_out.drop(col, axis=1, inplace=True)
+        df_out = df_out.drop(col, axis=1)
         
     return df_out
 
@@ -741,94 +742,56 @@ parametros_forex: dict[str, ParametrosPar] = {
         "periodo_largo": (50, 50),
         "periodo_corto": (25, 25),
         "medias": ([15, 50], [15, 50]), # [media corta, media larga]
-        "rango": (15, 15),
-
-        # Parametros macro
-        "periodo_variaciones": 50,
-        "periodo_asimetria": 60,
+        "rango": (15, 15)
         },
     "GBPUSD": {
-        # Parametros de precios 
         "periodo_largo": (40, 40),
         "periodo_corto": (25, 25),
         "medias": ([15, 50], [15, 50]),
-        "rango": (20, 10),
-
-        # Parametros macro
-        "periodo_variaciones": 55,
-        "periodo_asimetria": 60,
+        "rango": (20, 10)
         },
     "AUDUSD": {
-        # Parametros de precios 
         "periodo_largo": (40, 40),
         "periodo_corto": (25, 25),
         "medias": ([15, 50], [15, 50]),  
-        "rango": (10, 10),
-
-        # Parametros macro
-        "periodo_variaciones": 50,
-        "periodo_asimetria": 60,
+        "rango": (10, 10)
         },
-    "USDJPY": {
-        # Parametros de precios 
+    "USDJPY": { 
         "periodo_largo": (40, 40),
         "periodo_corto": (20, 25),
         "medias": ([20, 50], [15, 50]),  
-        "rango": (10, 10),
-
-        # Parametros macro
-        "periodo_variaciones": 35,
-        "periodo_asimetria": 50,
+        "rango": (10, 10)
     },
     "USDCAD": {
-        # Parametros de precios
         "periodo_largo": (40, 40),
         "periodo_corto": (25, 25),
         "medias": ([15, 50], [15, 50]),
-        "rango": (10, 10),
-
-        # Parametros macro
-        "periodo_variaciones": 50,
-        "periodo_asimetria": 40,
+        "rango": (10, 10)
     },
     "USDCHF": {
-        # Parametros de precios 
         "periodo_largo": (40, 40),
         "periodo_corto": (25, 25),
         "medias": ([15, 50], [15, 50]),
-        "rango": (10, 10),
-
-        # Parametros macro
-        "periodo_variaciones": 45,
-        "periodo_asimetria": 50,
+        "rango": (10, 10)
         }
 }
 
 def procesar_par(
         df_precios:pd.DataFrame,
-        df_bonds:pd.DataFrame,
-        df_macro:pd.DataFrame,
-        parametro: ParametrosPar
+        parametro: ParametrosPar,
+        simbolo:str
 )->pd.DataFrame:
 
     precios_features = obtener_features_precios(
         df=df_precios,
+        simbolo=simbolo,
         periodo_largo = parametro["periodo_largo"],
         periodo_corto = parametro["periodo_corto"],
         medias = parametro["medias"],
         rango = parametro["rango"] 
         )
 
-    macro_features = obtener_features_macro(
-        df_b=df_bonds, 
-        df_m=df_macro,
-        periodo_variaciones=parametro["periodo_variaciones"],
-        periodo_skew=parametro["periodo_asimetria"]
-        )
-
-    df_merged = precios_features.join(macro_features, how='inner')
-
-    return df_merged
+    return precios_features
 
 
 # Post proceso: transformaciones comunes y almacenamiento de ficheros de datos clean
@@ -838,7 +801,7 @@ def post_procesar_par(
         df:pd.DataFrame
 ):
     # Eliminar missings iniciales
-    df.dropna(inplace=True)
+    df = df.dropna()
 
     # Transformaciones
     columnas_features = df.columns.tolist()
@@ -864,7 +827,7 @@ def post_procesar_par(
     )
 
     # Se eliminan posibles missings luego de transformar
-    df_transform.dropna(inplace=True)
+    df_transform = df_transform.dropna()
 
     print(df_transform.info())
 
@@ -886,6 +849,16 @@ def main(
     precios_raw = preprocesar_precios()
     bonds_raw, macro_raw = preprocesar_macro()
 
+    # Obtener features macro comunes a todos los pares
+    macro_features = obtener_features_macro(
+            df_b=bonds_raw, 
+            df_m=macro_raw,
+            periodo_variaciones=50,
+            periodo_skew=50
+            )
+    # Hallar columnas yield spread para filtrar luego segun el par
+    cols_yield_spread = encontrar_columnas(macro_features, cadena="_yield_spread_")
+    
     # Procesar pares
     if simbolo_consola:        
         pares_forex=[simbolo_consola]
@@ -895,13 +868,17 @@ def main(
     for par in pares_forex:
         parametros = parametros_forex.get(par)
         if parametros:
-            df_par = procesar_par(
+            precios_par = procesar_par(
                 df_precios=precios_raw,
-                df_bonds=bonds_raw,
-                df_macro=macro_raw,
-                parametro=parametros
+                parametro=parametros,
+                simbolo=par
             )
-            post_procesar_par(par, df_par)
+            # Filtrar yield spread de datos macro para simbolos restantes
+            yields_restantes = [col for col in cols_yield_spread if par not in col]
+            macro_features_par = macro_features.drop(columns=yields_restantes)
+            
+            df_merged = precios_par.join(macro_features_par, how='inner')
+            post_procesar_par(par, df_merged)
 
                   
 def entrypoint_transform(argv: Sequence[str] | None = None):
