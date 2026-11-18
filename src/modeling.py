@@ -47,29 +47,6 @@ def cargar_datos_clean(
         return pd.DataFrame()
 
 
-def filtrar_pares_restantes(
-        df:pd.DataFrame,
-        target:str
-)->pd.DataFrame:
-    df_out = df.copy()
-    columnas_clean = df_out.columns.tolist()
-   
-    simbolos_restantes = [simbolo for simbolo in forex_cols if simbolo != target]
-    columnas_a_eliminar = []
-    for simbolo in simbolos_restantes:
-        columnas_a_eliminar.extend(encontrar_columnas(columnas_clean, simbolo))
-
-    '''
-    retornos_restantes = []
-    for col in simbolos_restantes:
-        col_name = f"{col}_return_zscore"
-        if col_name in columnas_clean:
-            retornos_restantes.append(col_name)
-    '''
-
-    # Se eliminan las demas columnas
-    return df_out.drop(columns=columnas_a_eliminar, errors='ignore')
-
 # Funciones de pre-procesamiento
 
 def separar_train_test(
@@ -189,7 +166,6 @@ def preprocesar_entrenamiento(
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean(simbolo=par)
-    df = filtrar_pares_restantes(df,par)
 
     # Separar datos de entrenamiento y datos live
     ultima_fecha = df.index.max()
@@ -311,7 +287,6 @@ def preprocesar_evaluacion(
 )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
     # Cargar fichero de precios
     df = cargar_datos_clean(simbolo=par)
-    df = filtrar_pares_restantes(df,par)
 
     # Primero se remueven los datos live (ultima fecha contemporanea)
     ultima_fecha = df.index.max()
@@ -403,14 +378,12 @@ def evaluar_modelo_cat(
     val_f1_weighted = f1_score(y_val, y_pred_val, average="weighted")
 
     validation_summary = {
-        "Val Accuracy": f"{val_acc:.4f}",
-        "Val Balanced Accuracy": f"{val_balanced_acc:.4f}",
-        "Val F1 (Macro)": f"{val_f1_macro:.4f}",
-        "Val F1 (Weighted)": f"{val_f1_weighted:.4f}",
-        "Val Log Loss": f"{val_log_loss:.4f}"
-        if not np.isnan(val_log_loss)
-        else "N/A",
-        "Train vs Val Accuracy Gap": f"{(train_acc - val_acc):.4f}",
+        "Val Accuracy": float(val_acc),
+        "Val Balanced Accuracy": float(val_balanced_acc),
+        "Val F1 (Macro)": float(val_f1_macro),
+        "Val F1 (Weighted)": float(val_f1_weighted),
+        "Val Log Loss": float(val_log_loss) if not np.isnan(val_log_loss) else np.nan,
+        "Train vs Val Accuracy Gap": float(train_acc - val_acc),
     }
 
     raw_scores = {
@@ -473,7 +446,8 @@ def evaluar_modelo_cat(
     print("RESUMEN DE VALIDACIÓN")
     print("=" * 60)
     for metric, val in validation_summary.items():
-        print(f"{metric:<30}: {val}")
+        display_val = f"{val:.4f}" if not np.isnan(val) else "N/A"
+        print(f"{metric:<30}: {display_val}")
 
     print("\n" + "=" * 60)
     print("REPORTE DE CLASIFICACIÓN DETALLADO (SOBRE VALIDACIÓN)")
@@ -560,7 +534,7 @@ def registrar_evaluacion_excel(
     df_report = dict_evaluacion.get("classification_report")
     if df_report is not None:
         df_report = df_report.copy().reset_index()
-        df_report.rename(columns={"index": "clase_o_metrica"}, inplace=True)
+        df_report = df_report.rename(columns={"index": "clase_o_metrica"})
         df_report.insert(0, "run_id", run_id)
         df_report.insert(1, "simbolo", simbolo)
 
