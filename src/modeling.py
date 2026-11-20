@@ -8,39 +8,36 @@ import numpy as np
 import datetime as dt
 import argparse
 from pathlib import Path
-from typing import Tuple, Optional, Sequence
+from typing import (
+   Sequence, Optional, Any,
+   Dict, List
+   )
 from datetime import datetime
 import matplotlib.pyplot as plt
 import json
 
+from scipy.stats import spearmanr
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    log_loss,
-    roc_auc_score
+    mean_absolute_error, mean_squared_error, r2_score
 )
-from sklearn.model_selection import GridSearchCV, PredefinedSplit
+from sklearn.model_selection import GridSearchCV, PredefinedSplit, TimeSeriesSplit
+from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.linear_model import MultiTaskElasticNetCV, RidgeCV
 from sklearn.pipeline import Pipeline
 
-from src.transform import encontrar_columnas
-from src.config import carpeta_datos, intervalo_defecto, forex_cols
+from src.config import CARPETA_DATOS, INTERVALO_DEFECTO, MAP_DIVISAS, DIVISAS
 
 
-def cargar_datos_clean(
-        simbolo:str
-)->pd.DataFrame:
-    fichero_clean = Path(carpeta_datos) / f"clean_data/{simbolo}_clean.parquet"
+def cargar_datos_clean()->pd.DataFrame:
+    fichero_clean = Path(CARPETA_DATOS) / f"clean_data/clean.parquet"
     try:
         df = pd.read_parquet(fichero_clean)
         return df
 
     except FileNotFoundError:
-        print(f"Error: No se encontro fichero del par {simbolo}.")
+        print("Error: No se encontro fichero.")
         return pd.DataFrame()   
     except Exception as e:
         print(f"Ocurrió un error al leer el archivo Parquet: {e}")
@@ -49,155 +46,158 @@ def cargar_datos_clean(
 
 # Funciones de pre-procesamiento
 
+def wide_to_long_panel(
+    df_wide: pd.DataFrame,
+    currencies: Optional[List[str]] = None,
+    include_macro: bool = True,
+) -> pd.DataFrame:
+  """Transforma el DataFrame semanal ancho en un panel largo (6370 filas)
+
+  con una fila por (fecha, divisa), alineando features propios de cada divisa,
+  spreads de tasas direccionales y variables macro globales.
+  """
+  if currencies is None:
+    currencies = DIVISAS
+
+  # Excluir prefijos de divisas y pares con spread (mantiene DXY_vel_50d_lag1 en macro_cols)
+  prefixes_to_exclude = tuple(
+      [f"{c}_" for c in currencies]
+      + [f"{p}_" for p, _ in MAP_DIVISAS.values()]
+  )
+  macro_cols = [
+      col for col in df_wide.columns if not col.startswith(prefixes_to_exclude)
+  ]
+
+  ccy_feature_suffixes = [
+      "return_rank_lag1",
+      "return_skew_lag1",
+      "return_vol_dir_lag1_log",
+      "return_sma52_zscore_lag1",
+      "return_vol_ratio_lag1",
+      "return_sma26_delta_sma52_zscore_lag1",
+      "return_std_lag1_log",
+      "SPY_return_zscore_exposure_lag1",
+      "Oil_return_zscore_exposure_lag1",
+      "Gold_return_zscore_exposure_lag1",
+      "VIX_pct_diff_lag1_zscore_exposure",
+      "Real_yield_delta_lag1_zscore_exposure"
+  ]
+
+  spread_suffixes = [
+      "yield_spread_zscore_lag1"
+  ]
+
+  panel_frames = []
+
+  for ccy in currencies:
+    df_ccy = pd.DataFrame(index=df_wide.index)
+    df_ccy["Currency"] = ccy
+
+    # 1. Target de la semana actual
+    df_ccy["target_rank"] = df_wide[f"{ccy}_return_rank"]
+
+    # 2. Features propios de la divisa (si no existe para USD, rellena con NaN)
+    for suf in ccy_feature_suffixes:
+      col_name = f"{ccy}_{suf}"
+      df_ccy[suf] = df_wide[col_name] if col_name in df_wide.columns else np.nan
+
+    # 3. Yield spreads alineados direccionalmente (positivo = diferencial a favor de 'ccy')
+    if ccy in MAP_DIVISAS:
+      pair_name, sign = MAP_DIVISAS[ccy]
+      for suf in spread_suffixes:
+        df_ccy[suf] = sign * df_wide[f"{pair_name}_{suf}"]
+    else:
+      # Para USD: promedio ponderado inverso de los 6 pares contra USD (o 0.0 si prefieres neutral)
+      for suf in spread_suffixes:
+        usd_spreads = [
+            -sign * df_wide[f"{pair}_{suf}"]
+            for pair, sign in MAP_DIVISAS.values()
+        ]
+        df_ccy[suf] = pd.concat(usd_spreads, axis=1).mean(axis=1)
+
+    # 4. Variables macro globales (incluye DXY_vel_50d_lag1)
+    if include_macro:
+      df_ccy = pd.concat([df_ccy, df_wide[macro_cols]], axis=1)
+
+    panel_frames.append(df_ccy)
+
+  # Apilar las 7 divisas y ordenar cronológicamente por (date, Currency)
+  df_long = pd.concat(panel_frames, axis=0)
+  df_long.index.name = "date"
+  df_long = (
+      df_long.reset_index()
+      .sort_values(by=["date", "Currency"])
+      .reset_index(drop=True)
+  )
+  df_long["Currency"] = df_long["Currency"].astype("category")
+
+  return df_long
+
+
 def separar_train_test(
         df:pd.DataFrame,
         fecha:datetime
-)->tuple[pd.DataFrame, pd.DataFrame]:
-    '''
-    Divide el DataFrame en conjuntos de entrenamiento y prueba basándose en la fecha de corte.
-    '''
-    df_train = df[df.index < fecha]
-    df_test = df[df.index >= fecha].copy()
+    )->tuple[pd.DataFrame, pd.DataFrame]:
+        '''
+        Divide el DataFrame en conjuntos de entrenamiento y prueba basándose en la fecha de corte.
+        '''
+        df_train = df[df.index < fecha]
+        df_test = df[df.index >= fecha].copy()
 
-    return df_train, df_test
+        return df_train, df_test
     
-
-def categorizar_en_cuantiles(
-    df_train: pd.DataFrame,
-    columna: str,
-    num_cuantiles: int = 3,
-    quitar_original: bool = False,
-) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
-    """Transforma una columna continua en cuantiles globales.
-
-    Parámetros:
-    - df: DataFrame con los datos.
-    - columna: Nombre de la columna continua a transformar.
-    - num_cuantiles: Cantidad de cuantiles solicitados.
-    - quitar_original: Si se elimina la columna original tras crear los cuantiles.
-
-    Retorna:
-    - (df_out, df_bins): Tupla con el nuevo DataFrame y un DataFrame con los
-      límites inferiores y superiores de cada cuantil generado. Si no fue posible
-      calcular los cuantiles, df_bins será None.
-    """
-    df_out = df_train.copy()
-    nueva_columna = f"{columna}_cat"
-
-    serie = df_out[columna]
-    valid_count = serie.count()
-    df_bins = None
-
-    # Verificación de datos suficientes y varianza
-    if valid_count < num_cuantiles or serie.nunique() < 2:
-        df_out[nueva_columna] = np.nan
-    else:
-        try:
-            # retbins=True devuelve la serie categórica y el array con los bordes
-            cuantiles, bins = pd.qcut(
-                serie,
-                q=num_cuantiles,
-                labels=False,
-                duplicates="drop",
-                retbins=True,
-            )
-
-            # Sumar 1 para etiquetar de 1 a N
-            df_out[nueva_columna] = cuantiles + 1
-
-            # Construir tabla de límites por categoría
-            # len(bins) - 1 corresponde al número real de cuantiles formados
-            num_categorias_creadas = len(bins) - 1
-            df_bins = pd.DataFrame(
-                {
-                    "categoria": range(1, num_categorias_creadas + 1),
-                    "lim_inferior": bins[:-1],
-                    "lim_superior": bins[1:],
-                }
-            )
-
-        except ValueError:
-            df_out[nueva_columna] = np.nan
-
-    # Convertir a tipo 'category'
-    df_out[nueva_columna] = df_out[nueva_columna].astype("category")
-
-    # Eliminar columna original si corresponde
-    if quitar_original:
-        df_out = df_out.drop(columns=[columna])
-
-    return df_out, df_bins
-
 
 def separar_predictores_y_objetivo(
     df_train: pd.DataFrame,
     df_test: pd.DataFrame,
-    col_target:str, 
     cols_excluded: list[str],
-    flag_evaluacion:bool
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
-    '''
+    cols_target:Optional[list[str]]=None,
+    flag_evaluacion:bool=False    
+    ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.DataFrame]:
+        '''
 
-    '''
-    # Columnas a descartar de predictores
-    cols_excluded.extend([col_target])
-    columnas_a_descartar = set(cols_excluded)
-    cols_drop = [c for c in columnas_a_descartar if c in df_train.columns]
+        '''
+        if cols_target is None:
+            cols_target = COLS_TARGET
 
-    X_train = df_train.drop(columns=cols_drop)
-    y_train = df_train[col_target]
+        # Predictores a descartar: variables excluidas y labels
+        columnas_a_descartar = set(cols_excluded+cols_target)
+        cols_drop = [c for c in columnas_a_descartar if c in df_train.columns]
 
-    if flag_evaluacion:
-        y_test = df_test[col_target]
+        X_train = df_train.drop(columns=cols_drop)
+        Y_train = df_train[cols_target]
+
+        if flag_evaluacion:
+            Y_test = df_test[cols_target]
+            
+        else:
+            Y_test=pd.DataFrame() # dataframe vacio
+            # se asigna a nan para evitar error al eliminar columnas
+            df_test.loc[:, cols_target] = np.nan 
         
-    else:
-        y_test=pd.Series() # serie vacia
-        # se asigna a nan para evitar error al eliminar columnas
-        df_test.loc[:, col_target] = np.nan 
-    
-    X_test = df_test.drop(columns=cols_drop)
+        X_test = df_test.drop(columns=cols_drop)
 
-    return X_train, y_train, X_test, y_test
+        return X_train, Y_train, X_test, Y_test
 
 
 def preprocesar_entrenamiento(
-        par:str,
         variables_a_excluir:list[str]
-)->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
-    # Cargar fichero de precios
-    df = cargar_datos_clean(simbolo=par)
+        )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
+            # Cargar fichero de precios
+            df = cargar_datos_clean()
 
-    # Separar datos de entrenamiento y datos live
-    ultima_fecha = df.index.max()
-    df_train, df_live = separar_train_test(df=df, fecha=ultima_fecha)
+            # Separar datos de entrenamiento y datos live
+            ultima_fecha = df.index.max()
+            df_train, df_live = separar_train_test(df=df, fecha=ultima_fecha)
 
-    # Se crea la variable categorica a partir del dataset de entrenamiento
-    # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{par}_return_zscore"
-    objetivo_cat = f"{objetivo}_cat"
+            X_train, y_train, X_live, _ = separar_predictores_y_objetivo(
+                df_train=df_train, 
+                df_test=df_live, 
+                cols_excluded=variables_a_excluir,
+                flag_evaluacion=False
+                )
 
-    df_train, tabla_bins = categorizar_en_cuantiles(
-        df_train=df_train, 
-        columna=objetivo, 
-        num_cuantiles=3, 
-        quitar_original=False
-        )
-   
-    print(f"\n--- Rangos por Categoría para el ticker {par} ---")
-    print(tabla_bins)
-
-    # Separar predictores y variable objetivo
-    variables_a_excluir.extend([objetivo])
-
-    X_train, y_train, X_live, _ = separar_predictores_y_objetivo(
-        df_train=df_train, 
-        df_test=df_live, 
-        col_target=objetivo_cat,
-        cols_excluded=variables_a_excluir,
-        flag_evaluacion=False
-        )
-
-    return X_train, y_train, X_live, pd.Series(), ultima_fecha     
+            return X_train, y_train, X_live, pd.Series(), ultima_fecha     
 
 # Funciones de evaluacion
 
@@ -281,211 +281,313 @@ def categorizar_con_bins(
 
 
 def preprocesar_evaluacion(
-        par:str,
         variables_a_excluir:list[str],
         test_size:float=0.2
-)->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
-    # Cargar fichero de precios
-    df = cargar_datos_clean(simbolo=par)
+        )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
+            # Cargar fichero de precios
+            df = cargar_datos_clean()
 
-    # Primero se remueven los datos live (ultima fecha contemporanea)
-    ultima_fecha = df.index.max()
-    df_train, _ = separar_train_test(df=df, fecha=ultima_fecha)
+            # Primero se remueven los datos live (ultima fecha contemporanea)
+            ultima_fecha = df.index.max()
+            df_train, _ = separar_train_test(df=df, fecha=ultima_fecha)
 
-    # Luego de remover los datos live, se separan los datos de train y validacion
-    split_idx = int(len(df_train) * (1 - test_size))
-    fecha_corte = df_train.index[split_idx]
+            # Luego de remover los datos live, se separan los datos de train y validacion
+            split_idx = int(len(df_train) * (1 - test_size))
+            fecha_corte = df_train.index[split_idx]
 
-    df_train, df_test = separar_train_test(df=df_train, fecha=fecha_corte)
-    print("Generando los datos para la evaluación.")
+            df_train, df_test = separar_train_test(df=df_train, fecha=fecha_corte)
 
-    # Se crea la variable categorica a partir del dataset de entrenamiento
-    # Variable objetivo: se crea variable categorica por cuantiles
-    objetivo = f"{par}_return_zscore"
-    objetivo_cat = f"{objetivo}_cat"
-
-    df_train, tabla_bins = categorizar_en_cuantiles(
-        df_train, 
-        columna=objetivo, 
-        num_cuantiles=3, 
-        quitar_original=False
-        )
-    print(f"\n--- Rangos por Categoría para el ticker {par} ---")
-    print(tabla_bins)
-
-    # Categorizar la variable objetivo en df_test con los mismos limites (extendidos a -inf / +inf)
-    df_test = categorizar_con_bins(
-        df=df_test,
-        columna_target=objetivo,
-        df_bins=tabla_bins
-    )
-    
-    # Separar predictores y variable objetivo
-    variables_a_excluir.extend([objetivo])
-
-    X_train, y_train, X_test, y_test = separar_predictores_y_objetivo(
-            df_train=df_train, 
-            df_test=df_test, 
-            col_target=objetivo_cat,
-            cols_excluded=variables_a_excluir,
-            flag_evaluacion=True
-            )
-    
-    return X_train, y_train, X_test, y_test, fecha_corte
+            X_train, Y_train, X_test, Y_test = separar_predictores_y_objetivo(
+                    df_train=df_train, 
+                    df_test=df_test, 
+                    cols_excluded=variables_a_excluir,
+                    flag_evaluacion=True
+                    )
+            
+            return X_train, Y_train, X_test, Y_test, fecha_corte
 
 
-def evaluar_modelo_cat(
-    model,
-    X_train,
-    y_train,
-    X_val,
-    y_val,
-    random_state=42,
-    run_permutation_importance=False,
-    class_names=None,
-):
-    """Evalúa un RandomForest multiclase a partir de datos con particion temporal.
-    Reporte por clase, matrices de confusión y análisis de importancia de variables.
-    """
-    feature_names = (
-        X_train.columns.tolist()
-        if hasattr(X_train, "columns")
-        else [f"feature_{i}" for i in range(X_train.shape[1])]
-    )
+def _extract_estimator(model):
+  """Extrae el estimador final si 'model' es un sklearn Pipeline."""
+  if isinstance(model, Pipeline):
+    return model.steps[-1][1]
+  return model
 
-    # Entrenamiento del estimador
-    model.fit(X_train, y_train)
 
-    if class_names is None:
-        class_names = [str(cls) for cls in model.classes_]
+def _compute_weekly_rank_ic(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+  """Calcula Spearman Rank IC semana a semana (axis=1) y métricas de extremos."""
+  ics = []
+  top_beats_bottom = []
 
-    # Predicciones de validación y probabilidades
-    y_pred_val = model.predict(X_val)
-    y_pred_train = model.predict(X_train)
+  for t in range(y_true.shape[0]):
+    row_true = y_true[t]
+    row_pred = y_pred[t]
 
-    # Manejo de probabilidades para Log Loss
-    if hasattr(model, "predict_proba"):
-        y_proba_val = model.predict_proba(X_val)
-        val_log_loss = log_loss(y_val, y_proba_val, labels=model.classes_)
+    # Evitar NaNs o filas constantes
+    if np.std(row_pred) < 1e-12 or np.std(row_true) < 1e-12:
+      ics.append(0.0)
+      top_beats_bottom.append(0.5)
+      continue
+
+    ic, _ = spearmanr(row_true, row_pred)
+    ics.append(0.0 if np.isnan(ic) else float(ic))
+
+    # ¿La divisa predicha más fuerte (argmax) superó realmente a la más débil (argmin)?
+    idx_long = int(np.argmax(row_pred))
+    idx_short = int(np.argmin(row_pred))
+    if row_true[idx_long] > row_true[idx_short]:
+      top_beats_bottom.append(1.0)
+    elif row_true[idx_long] < row_true[idx_short]:
+      top_beats_bottom.append(0.0)
     else:
-        val_log_loss = np.nan
+      top_beats_bottom.append(0.5)
 
-    # Métricas equivalentes calculadas sobre el set de validación
-    train_acc = accuracy_score(y_train, y_pred_train)
-    val_acc = accuracy_score(y_val, y_pred_val)
-    val_balanced_acc = balanced_accuracy_score(y_val, y_pred_val)
-    val_f1_macro = f1_score(y_val, y_pred_val, average="macro")
-    val_f1_weighted = f1_score(y_val, y_pred_val, average="weighted")
+  ics = np.array(ics)
+  ic_mean = float(np.mean(ics))
+  ic_std = float(np.std(ics, ddof=1)) if len(ics) > 1 else np.nan
+  ic_ir = float(ic_mean / ic_std) if ic_std and ic_std > 0 else np.nan
 
-    validation_summary = {
-        "Val Accuracy": float(val_acc),
-        "Val Balanced Accuracy": float(val_balanced_acc),
-        "Val F1 (Macro)": float(val_f1_macro),
-        "Val F1 (Weighted)": float(val_f1_weighted),
-        "Val Log Loss": float(val_log_loss) if not np.isnan(val_log_loss) else np.nan,
-        "Train vs Val Accuracy Gap": float(train_acc - val_acc),
-    }
+  return {
+      "ic_series": ics,
+      "ic_mean": ic_mean,
+      "ic_std": ic_std,
+      "ic_ir": ic_ir,
+      "ic_positive_rate": float(np.mean(ics > 0)),
+      "top_vs_bottom_hit_rate": float(np.mean(top_beats_bottom)),
+  }
 
-    raw_scores = {
-        "train_accuracy": train_acc,
-        "test_accuracy": val_acc,
-        "test_balanced_accuracy": val_balanced_acc,
-        "test_f1_macro": val_f1_macro,
-        "test_f1_weighted": val_f1_weighted,
-        "test_log_loss": val_log_loss,
-    }
 
-    # Reporte por clase y matriz de confusión (evaluados sobre validación)
-    cls_report_dict = classification_report(
-        y_val,
-        y_pred_val,
-        target_names=class_names,
-        labels=model.classes_,
-        output_dict=True,
+def _rank_ic_scorer(estimator, X, y):
+  """Scorer custom para permutation_importance basado en Mean Weekly Rank IC."""
+  y_arr = y.values if isinstance(y, pd.DataFrame) else np.asarray(y)
+  y_pred = estimator.predict(X)
+  return _compute_weekly_rank_ic(y_arr, y_pred)["ic_mean"]
+
+
+def evaluar_modelo_multitask_rank(
+    model,
+    X_train: pd.DataFrame,
+    Y_train: pd.DataFrame,
+    X_val: pd.DataFrame,
+    Y_val: pd.DataFrame,
+    random_state: int = 42,
+    run_permutation_importance: bool = False,
+    currency_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+  """Evalúa un modelo MultiTaskElasticNetCV (o Pipeline) sobre rankings cross-sectional
+
+  de divisas con partición temporal.
+  """
+  feature_names = (
+      X_train.columns.tolist()
+      if hasattr(X_train, "columns")
+      else [f"feature_{i}" for i in range(X_train.shape[1])]
+  )
+
+  if currency_names is None:
+    currency_names = (
+        Y_train.columns.tolist()
+        if hasattr(Y_train, "columns")
+        else [f"currency_{i}" for i in range(Y_train.shape[1])]
     )
-    df_cls_report = pd.DataFrame(cls_report_dict).transpose()
 
-    cm_raw = confusion_matrix(y_val, y_pred_val, labels=model.classes_)
-    cm_norm = confusion_matrix(
-        y_val, y_pred_val, labels=model.classes_, normalize="true"
+  # Entrenamiento del estimador / pipeline
+  model.fit(X_train, Y_train)
+  est = _extract_estimator(model)
+
+  # Predicciones
+  Y_pred_train = model.predict(X_train)
+  Y_pred_val = model.predict(X_val)
+
+  Y_train_arr = (
+      Y_train.values if isinstance(Y_train, pd.DataFrame) else np.asarray(Y_train)
+  )
+  Y_val_arr = (
+      Y_val.values if isinstance(Y_val, pd.DataFrame) else np.asarray(Y_val)
+  )
+
+  # Métricas de regresión y Rank IC cross-sectional
+  train_rmse = float(np.sqrt(mean_squared_error(Y_train_arr, Y_pred_train)))
+  val_rmse = float(np.sqrt(mean_squared_error(Y_val_arr, Y_pred_val)))
+  val_mae = float(mean_absolute_error(Y_val_arr, Y_pred_val))
+  val_r2 = float(r2_score(Y_val_arr, Y_pred_val, multioutput="uniform_average"))
+
+  train_ic_stats = _compute_weekly_rank_ic(Y_train_arr, Y_pred_train)
+  val_ic_stats = _compute_weekly_rank_ic(Y_val_arr, Y_pred_val)
+
+  # Coeficientes y esparsidad del MultiTaskElasticNetCV
+  # coef_ tiene shape (n_targets, n_features)
+  coef_matrix = est.coef_
+  l21_norms = np.linalg.norm(coef_matrix, axis=0)
+  n_selected = int(np.sum(l21_norms > 1e-8))
+  total_features = len(feature_names)
+
+  alpha_val = float(getattr(est, "alpha_", np.nan))
+  l1_ratio_val = float(getattr(est, "l1_ratio_", np.nan))
+
+  validation_summary = {
+      "Val Mean Weekly Rank IC": val_ic_stats["ic_mean"],
+      "Val Rank IC IR (Mean/Std)": val_ic_stats["ic_ir"],
+      "Val IC > 0 (%)": val_ic_stats["ic_positive_rate"],
+      "Val Top-vs-Bottom Hit Rate": val_ic_stats["top_vs_bottom_hit_rate"],
+      "Val RMSE": val_rmse,
+      "Val MAE": val_mae,
+      "Val R2 (Uniform Avg)": val_r2,
+      "Train vs Val Rank IC Gap": (
+          train_ic_stats["ic_mean"] - val_ic_stats["ic_mean"]
+      ),
+      "Selected Alpha": alpha_val,
+      "Selected L1 Ratio": l1_ratio_val,
+      "Active Features": f"{n_selected} / {total_features}",
+  }
+
+  raw_scores = {
+      "train_rmse": train_rmse,
+      "val_rmse": val_rmse,
+      "val_mae": val_mae,
+      "val_r2": val_r2,
+      "train_rank_ic_mean": train_ic_stats["ic_mean"],
+      "val_rank_ic_mean": val_ic_stats["ic_mean"],
+      "val_rank_ic_std": val_ic_stats["ic_std"],
+      "val_rank_ic_ir": val_ic_stats["ic_ir"],
+      "val_ic_positive_rate": val_ic_stats["ic_positive_rate"],
+      "val_top_vs_bottom_hit_rate": val_ic_stats["top_vs_bottom_hit_rate"],
+      "alpha": alpha_val,
+      "l1_ratio": l1_ratio_val,
+      "n_selected_features": n_selected,
+      "n_total_features": total_features,
+  }
+
+  # Reporte detallado por divisa
+  currency_rows = []
+  for idx, ccy in enumerate(currency_names):
+    yt_c = Y_val_arr[:, idx]
+    yp_c = Y_pred_val[:, idx]
+    corr_c, _ = spearmanr(yt_c, yp_c)
+    currency_rows.append({
+        "Currency": ccy,
+        "RMSE": np.sqrt(mean_squared_error(yt_c, yp_c)),
+        "MAE": mean_absolute_error(yt_c, yp_c),
+        "R2": r2_score(yt_c, yp_c),
+        "Temporal Spearman": 0.0 if np.isnan(corr_c) else corr_c,
+        "Pred Std": np.std(yp_c),
+    })
+  df_currency_report = pd.DataFrame(currency_rows).set_index("Currency")
+
+  # 5. Matriz de transición de rangos discretos 1..N (equivalente a confusion_matrix)
+  n_ccy = len(currency_names)
+  true_ranks_int = (
+      pd.DataFrame(Y_val_arr).rank(axis=1, method="first").values.astype(int)
+  )
+  pred_ranks_int = (
+      pd.DataFrame(Y_pred_val).rank(axis=1, method="first").values.astype(int)
+  )
+
+  rank_cm_raw = np.zeros((n_ccy, n_ccy), dtype=int)
+  for t_r, p_r in zip(true_ranks_int.ravel(), pred_ranks_int.ravel()):
+    rank_cm_raw[t_r - 1, p_r - 1] += 1
+
+  row_sums = rank_cm_raw.sum(axis=1, keepdims=True)
+  rank_cm_norm = np.divide(
+      rank_cm_raw, row_sums, out=np.zeros_like(rank_cm_raw, dtype=float), where=row_sums != 0
+  )
+  rank_labels = [f"Rank {r}" for r in range(1, n_ccy + 1)]
+  df_rank_cm = pd.DataFrame(
+      rank_cm_norm,
+      index=[f"True: {lbl}" for lbl in rank_labels],
+      columns=[f"Pred: {lbl}" for lbl in rank_labels],
+  )
+
+  # 6. Importancia de variables por norma L2,1 conjunta + pesos por divisa
+  df_coef_per_ccy = pd.DataFrame(
+      coef_matrix.T, index=feature_names, columns=currency_names
+  )
+  df_importance = pd.DataFrame({
+      "feature": feature_names,
+      "importance_l21_norm": l21_norms,
+      "active": l21_norms > 1e-8,
+  })
+  df_importance = pd.concat(
+      [df_importance, df_coef_per_ccy.reset_index(drop=True)], axis=1
+  ).sort_values(by="importance_l21_norm", ascending=False)
+
+  # 7. Permutation Feature Importance sobre el conjunto de validación (usando Rank IC)
+  df_perm_importance = None
+  if run_permutation_importance:
+    perm_result = permutation_importance(
+        model,
+        X_val,
+        Y_val,
+        scoring=_rank_ic_scorer,
+        n_repeats=10,
+        random_state=random_state,
+        n_jobs=-1,
     )
-    df_cm = pd.DataFrame(
-        cm_norm,
-        index=[f"True: {c}" for c in class_names],
-        columns=[f"Pred: {c}" for c in class_names],
-    )
+    df_perm_importance = pd.DataFrame({
+        "feature": feature_names,
+        "perm_ic_drop_mean": perm_result.importances_mean,
+        "perm_ic_drop_std": perm_result.importances_std,
+    }).sort_values(by="perm_ic_drop_mean", ascending=False)
 
-    # Importancia de Variables (MDI)
-    mdi_importances = model.feature_importances_
-    df_importance = pd.DataFrame(
-        {"feature": feature_names, "importance_mdi": mdi_importances}
-    ).sort_values(by="importance_mdi", ascending=False)
+  # Impresión de resultados
+  print("=" * 70)
+  print("RESUMEN DE VALIDACIÓN (MULTI-TASK RANKING)")
+  print("=" * 70)
+  for metric, val in validation_summary.items():
+    if isinstance(val, str):
+      display_val = val
+    elif isinstance(val, float) and not np.isnan(val):
+      display_val = f"{val:.4f}"
+    else:
+      display_val = "N/A"
+    print(f"{metric:<32}: {display_val}")
 
-    # 6. Permutation Feature Importance sobre el conjunto de validación
-    df_perm_importance = None
-    if run_permutation_importance:
-        perm_result = permutation_importance(
-            model,
-            X_val,
-            y_val,
-            scoring="f1_macro",
-            n_repeats=10,
-            random_state=random_state,
-            n_jobs=-1,
-        )
-        df_perm_importance = pd.DataFrame(
-            {
-                "feature": feature_names,
-                "perm_importance_mean": perm_result.importances_mean,
-                "perm_importance_std": perm_result.importances_std,
-            }
-        ).sort_values(by="perm_importance_mean", ascending=False)
+  print("\n" + "=" * 70)
+  print("REPORTE POR DIVISA (SOBRE VALIDACIÓN)")
+  print("=" * 70)
+  print(df_currency_report.round(4))
 
-    # Impresión de resultados
-    print("=" * 60)
-    print("RESUMEN DE VALIDACIÓN")
-    print("=" * 60)
-    for metric, val in validation_summary.items():
-        display_val = f"{val:.4f}" if not np.isnan(val) else "N/A"
-        print(f"{metric:<30}: {display_val}")
+  print("\n" + "=" * 70)
+  print("MATRIZ DE TRANSICIÓN DE RANGOS (1=MÁS DÉBIL, 7=MÁS FUERTE)")
+  print("=" * 70)
+  print(df_rank_cm.round(4))
 
-    print("\n" + "=" * 60)
-    print("REPORTE DE CLASIFICACIÓN DETALLADO (SOBRE VALIDACIÓN)")
-    print("=" * 60)
-    print(df_cls_report.round(4))
+  print("\n" + "=" * 70)
+  print("RANKING DE VARIABLES - NORMA CONJUNTA L2,1")
+  print("=" * 70)
+  cols_to_print = ["feature", "importance_l21_norm"] + currency_names
+  print(df_importance[cols_to_print].head(30).to_string(index=False))
 
-    print("\n" + "=" * 60)
-    print("MATRIZ DE CONFUSIÓN (NORMALIZADA POR SOPORTE REAL)")
-    print("=" * 60)
-    print(df_cm.round(4))
+  if df_perm_importance is not None:
+    print("\n" + "=" * 70)
+    print("RANKING DE VARIABLES - IMPORTANCIA POR PERMUTACIÓN (RANK IC)")
+    print("=" * 70)
+    print(df_perm_importance.head(20).to_string(index=False))
 
-    print("\n" + "=" * 60)
-    print("RANKING DE VARIABLES - IMPORTANCIA POR IMPUREZA (MDI)")
-    print("=" * 60)
-    print(df_importance.head(20).to_string(index=False))
+  # DataFrame de predicciones en validación para análisis posterior
+  val_index = Y_val.index if isinstance(Y_val, pd.DataFrame) else None
+  df_val_preds = pd.DataFrame(
+      Y_pred_val, index=val_index, columns=currency_names
+  )
 
-    if df_perm_importance is not None:
-        print("\n" + "=" * 60)
-        print("RANKING DE VARIABLES - IMPORTANCIA POR PERMUTACIÓN (F1-Macro)")
-        print("=" * 60)
-        print(df_perm_importance.head(20).to_string(index=False))
-
-    return {
-        "validation_summary": validation_summary,
-        "validation_raw_results": raw_scores,
-        "classification_report": df_cls_report,
-        "confusion_matrix_raw": cm_raw,
-        "confusion_matrix_normalized": df_cm,
-        "feature_importance_mdi": df_importance,
-        "feature_importance_permutation": df_perm_importance,
-        "fitted_model": model,
-        "partitions": {
-            "X_train": X_train,
-            "X_val": X_val,
-            "y_train": y_train,
-            "y_val": y_val,
-        },
-    }
+  return {
+      "validation_summary": validation_summary,
+      "validation_raw_results": raw_scores,
+      "weekly_ic_series": val_ic_stats["ic_series"],
+      "currency_report": df_currency_report,
+      "rank_matrix_raw": rank_cm_raw,
+      "rank_matrix_normalized": df_rank_cm,
+      "feature_importance_l21": df_importance,
+      "feature_importance_permutation": df_perm_importance,
+      "val_predictions": df_val_preds,
+      "fitted_model": model,
+      "partitions": {
+          "X_train": X_train,
+          "X_val": X_val,
+          "y_train": Y_train,
+          "y_val": Y_val,
+      },
+  }
 
 
 def registrar_evaluacion_excel(
@@ -494,120 +596,120 @@ def registrar_evaluacion_excel(
     ultima_fecha,
     y_pred,
     filepath="historico_modelos_cat.xlsx",
-):
-    """Guarda o anexa los resultados de evaluar_modelo_cat y sus metadatos
+    ):
+        """Guarda o anexa los resultados de evaluar_modelo_cat y sus metadatos
 
-    en un libro de Excel estructurado.
-    """
-    path = Path(carpeta_datos) / f"evaluacion_modelos/{filepath}"
-    run_id = f"{simbolo}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    # Asegurar que el directorio exista
-    path.parent.mkdir(parents=True, exist_ok=True)
+        en un libro de Excel estructurado.
+        """
+        path = Path(CARPETA_DATOS) / f"evaluacion_modelos/{filepath}"
+        run_id = f"{simbolo}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Asegurar que el directorio exista
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Aplanar métricas de validación cruzada y metadatos (Fila única)
-    val_summary = dict_evaluacion.get("validation_summary", {})
-    fila_resumen = {
-        "run_id": run_id,
-        "timestamp_registro": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "simbolo": simbolo,
-        "intervalo": intervalo_defecto,
-        "ultima_fecha": str(ultima_fecha),
-        "y_pred": str(y_pred),
-        # Métricas escalares agregadas
-        "val_accuracy": val_summary.get("Val Accuracy", np.nan),
-        "val_balanced_acc": val_summary.get("Val Balanced Accuracy", np.nan),
-        "val_f1_macro": val_summary.get("Val F1 (Macro)", np.nan),
-        "val_f1_weighted": val_summary.get("Val F1 (Weighted)", np.nan),
-        "val_log_loss": val_summary.get("Val Log Loss", np.nan),
-        "train_test_gap": val_summary.get("Train vs Val Accuracy Gap", np.nan),
-    }
-    df_nueva_fila = pd.DataFrame([fila_resumen])
+        # 1. Aplanar métricas de validación cruzada y metadatos (Fila única)
+        val_summary = dict_evaluacion.get("validation_summary", {})
+        fila_resumen = {
+            "run_id": run_id,
+            "timestamp_registro": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "simbolo": simbolo,
+            "intervalo": INTERVALO_DEFECTO,
+            "ultima_fecha": str(ultima_fecha),
+            "y_pred": str(y_pred),
+            # Métricas escalares agregadas
+            "val_accuracy": val_summary.get("Val Accuracy", np.nan),
+            "val_balanced_acc": val_summary.get("Val Balanced Accuracy", np.nan),
+            "val_f1_macro": val_summary.get("Val F1 (Macro)", np.nan),
+            "val_f1_weighted": val_summary.get("Val F1 (Weighted)", np.nan),
+            "val_log_loss": val_summary.get("Val Log Loss", np.nan),
+            "train_test_gap": val_summary.get("Train vs Val Accuracy Gap", np.nan),
+        }
+        df_nueva_fila = pd.DataFrame([fila_resumen])
 
-    # 2. Preparar el DataFrame de Importancia de Features para anexar
-    df_feat = dict_evaluacion.get("feature_importance_mdi")
-    if df_feat is not None:
-        df_feat = df_feat.copy()
-        df_feat.insert(0, "run_id", run_id)
-        df_feat.insert(1, "simbolo", simbolo)
+        # 2. Preparar el DataFrame de Importancia de Features para anexar
+        df_feat = dict_evaluacion.get("feature_importance_mdi")
+        if df_feat is not None:
+            df_feat = df_feat.copy()
+            df_feat.insert(0, "run_id", run_id)
+            df_feat.insert(1, "simbolo", simbolo)
 
-    # 3. Preparar el Classification Report para anexar
-    df_report = dict_evaluacion.get("classification_report")
-    if df_report is not None:
-        df_report = df_report.copy().reset_index()
-        df_report = df_report.rename(columns={"index": "clase_o_metrica"})
-        df_report.insert(0, "run_id", run_id)
-        df_report.insert(1, "simbolo", simbolo)
+        # 3. Preparar el Classification Report para anexar
+        df_report = dict_evaluacion.get("classification_report")
+        if df_report is not None:
+            df_report = df_report.copy().reset_index()
+            df_report = df_report.rename(columns={"index": "clase_o_metrica"})
+            df_report.insert(0, "run_id", run_id)
+            df_report.insert(1, "simbolo", simbolo)
 
-    # 4. Escritura / Concatenación en Excel
-    if not path.exists():
-        with pd.ExcelWriter(path, engine="openpyxl") as writer:
-            df_nueva_fila.to_excel(
-                writer, sheet_name="Registro_Modelos", index=False
-            )
-            if df_feat is not None:
-                df_feat.to_excel(
-                    writer, sheet_name="Log_Features", index=False
-                )
-            if df_report is not None:
-                df_report.to_excel(
-                    writer, sheet_name="Log_Clases", index=False
-                )
-    else:
-        # Modo append conservando las hojas existentes
-        with pd.ExcelWriter(
-            path, engine="openpyxl", mode="a", if_sheet_exists="overlay"
-        ) as writer:
-            # Anexar a Hoja Principal
-            try:
-                hoja_existente = writer.sheets["Registro_Modelos"]
-                start_row = hoja_existente.max_row
-                df_nueva_fila.to_excel(
-                    writer,
-                    sheet_name="Registro_Modelos",
-                    index=False,
-                    header=False,
-                    startrow=start_row,
-                )
-            except KeyError:
+        # 4. Escritura / Concatenación en Excel
+        if not path.exists():
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
                 df_nueva_fila.to_excel(
                     writer, sheet_name="Registro_Modelos", index=False
                 )
-
-            # Anexar a Log_Features
-            if df_feat is not None:
-                try:
-                    hoja_feat = writer.sheets["Log_Features"]
-                    start_row_feat = hoja_feat.max_row
-                    df_feat.to_excel(
-                        writer,
-                        sheet_name="Log_Features",
-                        index=False,
-                        header=False,
-                        startrow=start_row_feat,
-                    )
-                except KeyError:
+                if df_feat is not None:
                     df_feat.to_excel(
                         writer, sheet_name="Log_Features", index=False
                     )
-
-            # Anexar a Log_Clases
-            if df_report is not None:
-                try:
-                    hoja_report = writer.sheets["Log_Clases"]
-                    start_row_rep = hoja_report.max_row
-                    df_report.to_excel(
-                        writer,
-                        sheet_name="Log_Clases",
-                        index=False,
-                        header=False,
-                        startrow=start_row_rep,
-                    )
-                except KeyError:
+                if df_report is not None:
                     df_report.to_excel(
                         writer, sheet_name="Log_Clases", index=False
                     )
+        else:
+            # Modo append conservando las hojas existentes
+            with pd.ExcelWriter(
+                path, engine="openpyxl", mode="a", if_sheet_exists="overlay"
+            ) as writer:
+                # Anexar a Hoja Principal
+                try:
+                    hoja_existente = writer.sheets["Registro_Modelos"]
+                    start_row = hoja_existente.max_row
+                    df_nueva_fila.to_excel(
+                        writer,
+                        sheet_name="Registro_Modelos",
+                        index=False,
+                        header=False,
+                        startrow=start_row,
+                    )
+                except KeyError:
+                    df_nueva_fila.to_excel(
+                        writer, sheet_name="Registro_Modelos", index=False
+                    )
 
-    print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
+                # Anexar a Log_Features
+                if df_feat is not None:
+                    try:
+                        hoja_feat = writer.sheets["Log_Features"]
+                        start_row_feat = hoja_feat.max_row
+                        df_feat.to_excel(
+                            writer,
+                            sheet_name="Log_Features",
+                            index=False,
+                            header=False,
+                            startrow=start_row_feat,
+                        )
+                    except KeyError:
+                        df_feat.to_excel(
+                            writer, sheet_name="Log_Features", index=False
+                        )
+
+                # Anexar a Log_Clases
+                if df_report is not None:
+                    try:
+                        hoja_report = writer.sheets["Log_Clases"]
+                        start_row_rep = hoja_report.max_row
+                        df_report.to_excel(
+                            writer,
+                            sheet_name="Log_Clases",
+                            index=False,
+                            header=False,
+                            startrow=start_row_rep,
+                        )
+                    except KeyError:
+                        df_report.to_excel(
+                            writer, sheet_name="Log_Clases", index=False
+                        )
+
+        print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
 
 # Funciones complementarias de evaluacion
@@ -669,69 +771,69 @@ def optimizar(
 def curva_desempenio(
         simbolo: str = "EURUSD",
         test_size: float=0.2
-):
-    '''
-    Grafica la evolucion del desempeno del modelo al aumentar la complejidad.
-    Identifica el trade-off entre Sesgo y Varianza:
-    - Alto sesgo (underfitting): Metricas de train y test bajas y cercanas entre si.
-    - Zona de equilibrio: punto donde la metrica test alcanza su valor optimo antes de degradarse.
-    - Alta varianza (overfitting): la metrica de train sigue subiendo, mientras que la de
-    test comienza a caer o se abre una brecha (generalization gap).
-    '''
-    predictores_a_excluir = []
-    X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(
-        par=simbolo, 
-        variables_a_excluir=predictores_a_excluir,
-        test_size=test_size
-    )
-
-    complexity_var = 'max_depth'
-    complexity_range = list(range(1, 10, 1))
-    train_scores, test_scores = [], []
-
-    for value in complexity_range:
-        rf = RandomForestClassifier(
-            random_state=42,
-            n_estimators=400, 
-            max_depth=value,
-            min_samples_leaf=28,
-            min_samples_split=4,
-            max_samples=0.45,
-            max_features=0.3,
-            class_weight='balanced_subsample',              
-            n_jobs=1
+    ):
+        '''
+        Grafica la evolucion del desempeno del modelo al aumentar la complejidad.
+        Identifica el trade-off entre Sesgo y Varianza:
+        - Alto sesgo (underfitting): Metricas de train y test bajas y cercanas entre si.
+        - Zona de equilibrio: punto donde la metrica test alcanza su valor optimo antes de degradarse.
+        - Alta varianza (overfitting): la metrica de train sigue subiendo, mientras que la de
+        test comienza a caer o se abre una brecha (generalization gap).
+        '''
+        predictores_a_excluir = []
+        X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(
+            par=simbolo, 
+            variables_a_excluir=predictores_a_excluir,
+            test_size=test_size
         )
-        rf.fit(X_train, y_train)
 
-        # Probabilidades en train y test
-        y_train_prob = rf.predict_proba(X_train)
-        y_test_prob = rf.predict_proba(X_test)
+        complexity_var = 'max_depth'
+        complexity_range = list(range(1, 10, 1))
+        train_scores, test_scores = [], []
 
-        # Metricas roc_auc
-        train_auc = roc_auc_score(y_train, y_train_prob, multi_class='ovr', average='weighted')
-        test_auc = roc_auc_score(y_test, y_test_prob, multi_class='ovr', average='weighted')
+        for value in complexity_range:
+            rf = RandomForestClassifier(
+                random_state=42,
+                n_estimators=400, 
+                max_depth=value,
+                min_samples_leaf=28,
+                min_samples_split=4,
+                max_samples=0.45,
+                max_features=0.3,
+                class_weight='balanced_subsample',              
+                n_jobs=1
+            )
+            rf.fit(X_train, y_train)
 
-        train_scores.append(train_auc)
-        test_scores.append(test_auc)
+            # Probabilidades en train y test
+            y_train_prob = rf.predict_proba(X_train)
+            y_test_prob = rf.predict_proba(X_test)
 
-    plt.figure(figsize=(8, 4.5))
-    plt.plot(complexity_range, train_scores, marker='o', label="Train AUC (Aproximación al sesgo)")
-    plt.plot(complexity_range, test_scores, marker='s', label="Test AUC (Generalización)")
-    
-    # Invertir la dirección del eje X (para Min Samples leaf):
-    #plt.gca().invert_xaxis()
-    
-    plt.xlabel(complexity_var)
-    plt.ylabel("ROC AUC")
-    plt.title(f"Curva de Complejidad para el par {simbolo}")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+            # Metricas roc_auc
+            train_auc = roc_auc_score(y_train, y_train_prob, multi_class='ovr', average='weighted')
+            test_auc = roc_auc_score(y_test, y_test_prob, multi_class='ovr', average='weighted')
+
+            train_scores.append(train_auc)
+            test_scores.append(test_auc)
+
+        plt.figure(figsize=(8, 4.5))
+        plt.plot(complexity_range, train_scores, marker='o', label="Train AUC (Aproximación al sesgo)")
+        plt.plot(complexity_range, test_scores, marker='s', label="Test AUC (Generalización)")
+        
+        # Invertir la dirección del eje X (para Min Samples leaf):
+        #plt.gca().invert_xaxis()
+        
+        plt.xlabel(complexity_var)
+        plt.ylabel("ROC AUC")
+        plt.title(f"Curva de Complejidad para el par {simbolo}")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
 
 
 # Predictores a excluir segun el par forex
 def cargar_cols_filtrar()->dict:
-    fichero = Path(carpeta_datos) / "cols_filtrar.json"
+    fichero = Path(CARPETA_DATOS) / "cols_filtrar.json"
     try:
         with open(fichero, "r", encoding="utf-8") as file:
             excluir_dict = json.load(file)
@@ -749,94 +851,83 @@ Bloque principal
 Ejecucion desde el terminal:
 python -m src.modeling
 '''
-def main(
-        simbolo:str="EURUSD",
-        evaluar:bool=False
-):
-    cols_filtar = cargar_cols_filtrar()
-    predictores_a_excluir = cols_filtar.get(simbolo,[]) + filtro_general
-    X_train, y_train, X_live, _, ultima_fecha = preprocesar_entrenamiento(par=simbolo, variables_a_excluir=predictores_a_excluir)
+def main():
+    predictores_a_excluir = filtro_general
+    X_train, Y_train, X_live, _, ultima_fecha = preprocesar_entrenamiento(variables_a_excluir=predictores_a_excluir)
 
     # Inicializar modelo y entrenar
-    pipe = Pipeline([
-        ('model', RandomForestClassifier(
-            random_state=42,
-            n_estimators=400,
-            max_depth=1,
-            min_samples_leaf=28,
-            min_samples_split= 4,
-            max_samples= 0.45,
-            max_features= 0.3,
-            class_weight='balanced_subsample',
-            n_jobs=1            
-        ))
-
+    #nombre_modelo = 'MultiTaskElasticNetCV'
+    tscv = TimeSeriesSplit(n_splits=5)
+    pipe_mt_enet = Pipeline([
+        ("scaler", RobustScaler()),  
+        (
+            "model",
+            MultiTaskElasticNetCV(
+                # Bajar l1_ratio permite mantener más variables correlacionadas con suavizado L2
+                l1_ratio=[0.01, 0.03, 0.05, 0.1, 0.2, 0.5],
+                # Bajar el techo de alphas de 10.0 a ~0.8 para evitar colapso a 1 sola variable
+                alphas=np.logspace(-3, -0.1, 40),  # Rango: [0.001, 0.794]
+                cv=tscv,
+                max_iter=10000,
+                random_state=42,
+                n_jobs=-1,
+            ),
+        ),
     ])
+    nombre_modelo='Ridge'
+    pipe_ridge = Pipeline([
+        ("scaler", StandardScaler()),
+        ("model", RidgeCV(alphas=np.logspace(1, 5, 50), cv=tscv)),
+    ])  
 
-    pipe.fit(X_train, y_train)
+    print(f"Entrenando modelo {nombre_modelo}...")
+    pipe_ridge.fit(X_train, Y_train)
 
     # Realizar predicciones
-    y_live_pred = pipe.predict(X_live)
-    y_live_pred_proba = pipe.predict_proba(X_live)
-    df_probabilidades = pd.DataFrame(y_live_pred_proba, columns=pipe.classes_)
+    Y_live_pred = pd.DataFrame(
+        pipe_ridge.predict(X_live),
+        index=X_live.index,
+        columns=Y_train.columns
+    )
 
-    print(f"Entrenamiento modelo {simbolo} finalizado.")
+    print("Entrenamiento finalizado.")
     print(f"Dimensiones del dataset de entrenamiento:", X_train.shape)
-    print(f"Categoria predicha para el {ultima_fecha.strftime("%Y-%m-%d")}: {y_live_pred[0]}")
-    print("Probabilidades:")
-    print(df_probabilidades.head().to_string(index=False))
+    print(f"Predicciones para el {ultima_fecha.strftime("%Y-%m-%d")}:\n{Y_live_pred}")
+    #print("Probabilidades:")
+    #print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
+    evaluar = True
     if evaluar:
-        rf_model = pipe.named_steps['model']
+        model = pipe_ridge.named_steps['model']
 
-        X_train, y_train, X_test, y_test, fecha_corte = preprocesar_evaluacion(
-            par=simbolo, 
+        X_train, Y_train, X_test, Y_test, fecha_corte = preprocesar_evaluacion(
             variables_a_excluir=predictores_a_excluir
             )
         print("Evaluando modelo...")
         print("Fecha de corte:", fecha_corte)
 
-        dict_evaluacion = evaluar_modelo_cat(
-            model=rf_model, 
+        dict_evaluacion = evaluar_modelo_multitask_rank(
+            model=model, 
             X_train=X_train, 
-            y_train=y_train,
+            Y_train=Y_train,
             X_val=X_test,
-            y_val=y_test
+            Y_val=Y_test
             )
+        top_feats = dict_evaluacion["feature_importance_l21"].head(5)
+        print(top_feats[["feature", "importance_l21_norm"]])
 
+        # Verificar si esa variable tiene una escala numérica mucho mayor que el resto
+        print("\nDesviación estándar en X_train de esas variables:")
+        print(X_train[top_feats["feature"]].std())
+'''
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
-            simbolo=simbolo,
             ultima_fecha=ultima_fecha,
-            y_pred=y_live_pred # prediccion del modelo completo sobre la ultima fecha
+            y_pred=Y_live_pred # prediccion del modelo completo sobre la ultima fecha
         )
+'''
 
-def entrypoint_modeling(argv: Sequence[str] | None = None):
-    """Punto de entrada de línea de comandos."""
-    parser = argparse.ArgumentParser(description="Módulo de Modelado Categórico")
-
-    parser.add_argument(
-        "--simbolo", type=str, help="Símbolo del activo"
-    )
-    parser.add_argument(
-            "--evaluar",
-            action="store_true",
-            help="Ejecuta la evaluación del modelo tras el entrenamiento",
-        )
-    args = parser.parse_args(argv)
-
-    simbolo_entrada=args.simbolo
-    if simbolo_entrada:
-        # Limpiar y validar el simbolo
-        simbolo_limpio = simbolo_entrada.strip().upper()
-        if simbolo_limpio not in forex_cols:
-                print(f"Aviso: El símbolo '{simbolo_limpio}' no existe.")
-                return
-
-        # Ejecuta la lógica central con los argumentos parseados
-        return main(simbolo_limpio, evaluar=args.evaluar)
-    return main(evaluar=args.evaluar)
 
 if __name__ == '__main__':
-    entrypoint_modeling()
+    main()

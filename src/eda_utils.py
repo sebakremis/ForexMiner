@@ -96,7 +96,7 @@ def top_correlaciones(df:pd.DataFrame, top_n:int=20):
 
 def top_correlaciones_objetivo(
     df: pd.DataFrame,
-    target_col: str,
+    target_series: pd.Series,
     top_n: int = 20,
     usar_absoluto: bool = True,
     method: str = "pearson",
@@ -104,21 +104,14 @@ def top_correlaciones_objetivo(
     """Calcula las correlaciones de todas las columnas de un DataFrame respecto a una columna objetivo.
 
     Parámetros:
-    - df: DataFrame de entrada.
-    - target_col: Nombre de la columna objetivo.
+    - df: DataFrame de predictores.
+    - target: Serie objetivo
     - top_n: Cantidad de variables a retornar en el ranking.
     - usar_absoluto: Si es True, ordena por la fuerza de la relación sin importar el signo.
                      Si es False, conserva y ordena por valor real (+1 a -1).
     - method: 'pearson', 'kendall' o 'spearman'.
     """
-    if target_col not in df.columns:
-        raise ValueError(
-            f"La columna '{target_col}' no se encuentra en el DataFrame."
-        )
-
-    # 1. Separar la serie objetivo y las variables explicativas numéricas
-    target_series = df[target_col]
-    features_df = df.drop(columns=[target_col]).select_dtypes(
+    features_df = df.select_dtypes(
         include="number"
     )  # Asegura evaluar solo columnas numéricas
 

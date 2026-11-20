@@ -6,60 +6,48 @@ Modulo opcional para filtar variables debajo del umbral de ruido.
 import pandas as pd
 import json
 from src.modeling import (
-    cargar_datos_clean, separar_train_test, 
-    categorizar_en_cuantiles
+    cargar_datos_clean, wide_to_long_panel
     )
 from src.eda_utils import rankear_variables
-from src.config import carpeta_datos, forex_cols
+from src.config import CARPETA_DATOS
 from pathlib import Path
 
 
 
 def filtrar_cols(
-        par:str
+        col_objetivo:str,
 )->list:
     '''
-    Filtra las columnas de un par de divisas que se encuentran por debajo del umbral de ruido.
-    de acuerdo a la tabla de Cramer. Devuelve una lista con los nombres de las columnas a filtrar.
+    Filtra las columnas que se encuentran por debajo del umbral de ruido
+    de acuerdo a la tabla de Cramer. 
+    Devuelve una lista con los nombres de las columnas a filtrar.
     '''
-    # Carga y preparacion de datos
-    print(f"Filtrando columnas par {par}")
-    df_clean = cargar_datos_clean(simbolo=par)   
-    ultima_fecha = df_clean.index.max()
-    df_train, _ = separar_train_test(df=df_clean, fecha=ultima_fecha)
+    df_clean = cargar_datos_clean()
+    # Convertir a formato largo
+    df_long = wide_to_long_panel(df_clean)
 
-    # Crear variable objetivo categorica
-    objetivo_cont = f"{par}_return_zscore"
-    objetivo_cat = f"{objetivo_cont}_cat"
-    df_train, _ = categorizar_en_cuantiles(
-    df_train, 
-    columna=objetivo_cont, 
-    num_cuantiles=3, 
-    quitar_original=True
-    )
-
-    # Separar predictores y var objetivo, que se convierte a tipo 'category'
-    X = df_train.drop(objetivo_cat, axis=1)
-    y = df_train[objetivo_cat].astype('category')
+    df_panel = df_long.set_index(["date", "Currency"])
+    
+    y = df_panel[col_objetivo].astype('category')
+    X = df_panel.drop(columns=col_objetivo)
 
     # Crear tabla de Cramer
     tabla_cramer = rankear_variables(X=X, y=y, graficar=False)
     cols_filtrar = tabla_cramer.index[
         tabla_cramer["Status"] == "Below Noise"
-    ].tolist()
+    ].tolist() 
     return cols_filtrar
 
 def main():
     '''
     Genera un fichero JSON con las columnas a filtrar para cada par de divisas.
     '''
-    fichero = Path(carpeta_datos) / "cols_filtrar.json"
-    datos = {}
-    for pair in forex_cols:
-        datos[pair] = filtrar_cols(par=pair)
+    fichero = Path(CARPETA_DATOS) / "cols_filtrar.json"
+    col_objetivo = "target_rank"
+    cols_filtrar = filtrar_cols(col_objetivo)
 
     with fichero.open("w", encoding="utf-8") as f:
-        json.dump(datos, f, indent=4, ensure_ascii=False)
+        json.dump({col_objetivo:cols_filtrar}, f, indent=4, ensure_ascii=False)
 
     print(f"Datos guardados en fichero {fichero}.")
 

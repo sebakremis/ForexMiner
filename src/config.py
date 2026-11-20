@@ -6,13 +6,13 @@ Configuracion global del proyecto
 from typing import Dict
 
 # Ruta al fichero de datos
-carpeta_datos = "data"
+CARPETA_DATOS = "data"
 
 # Fecha inicial para descargar datos
-fecha_inicio_defecto = "2006-01-03"
+FECHA_INICIO_DEFECTO = "2006-01-03"
 
 # Intervalo por defecto
-intervalo_defecto = "1wk"
+INTERVALO_DEFECTO = "1wk"
 
 # Mapeo de series de precios
 FOREX_MAJORS: Dict[str, str] = {
@@ -33,9 +33,9 @@ OTROS_ACTIVOS: Dict[str, str] = {
 YFINANCE_SERIES: Dict[str, str] = {**FOREX_MAJORS, **OTROS_ACTIVOS}
 
 # Listas automaticas:
-forex_cols = list(FOREX_MAJORS.values())
-otros_activos_cols = list(OTROS_ACTIVOS.values())
-yfinance_cols = list(YFINANCE_SERIES.values())
+FOREX_COLS = list(FOREX_MAJORS.values())
+OTROS_ACTIVOS_COLS = list(OTROS_ACTIVOS.values())
+YFINANCE_COLS = list(YFINANCE_SERIES.values())
 
 # Mapeo de series macro: Series ID de FRED -> Nombre descriptivo de columna
 # Factores financieros / mercado (diarios o semanales en origen)
@@ -59,6 +59,18 @@ BOND_YIELDS: Dict[str, str] = {
 FRED_SERIES: Dict[str, str] = {**MACRO_SERIES, **BOND_YIELDS}
 
 # Listas automaticas:
-macro_cols = list(MACRO_SERIES.values())
-bond_cols = list(BOND_YIELDS.values())
-fred_cols = list(FRED_SERIES.values())
+MACRO_COLS = list(MACRO_SERIES.values())
+BOND_COLS = list(BOND_YIELDS.values())
+FRED_COLS = list(FRED_SERIES.values())
+
+# Mapeo de cada divisa extranjera a su par contra USD y su signo direccional
+# (+1 si el par es CCY/USD, -1 si el par es USD/CCY para que positivo = mayor tasa en CCY)
+MAP_DIVISAS = {
+    "EUR": ("EURUSD", 1.0),
+    "GBP": ("GBPUSD", 1.0),
+    "AUD": ("AUDUSD", 1.0),
+    "JPY": ("USDJPY", -1.0),
+    "CAD": ("USDCAD", -1.0),
+    "CHF": ("USDCHF", -1.0),
+}
+DIVISAS = ["EUR", "GBP", "AUD", "JPY", "CAD", "CHF", "USD"]
