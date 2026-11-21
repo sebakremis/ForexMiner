@@ -17,14 +17,14 @@ import matplotlib.pyplot as plt
 import json
 
 from scipy.stats import spearmanr
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import (
     mean_absolute_error, mean_squared_error, r2_score
 )
 from sklearn.model_selection import GridSearchCV, PredefinedSplit, TimeSeriesSplit
-from sklearn.preprocessing import RobustScaler, StandardScaler
-from sklearn.linear_model import MultiTaskElasticNetCV, RidgeCV
+from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
 from src.config import CARPETA_DATOS, INTERVALO_DEFECTO, MAP_DIVISAS, DIVISAS
@@ -150,30 +150,30 @@ def separar_train_test(
 def separar_predictores_y_objetivo(
     df_train: pd.DataFrame,
     df_test: pd.DataFrame,
-    cols_excluded: list[str],
-    cols_target:Optional[list[str]]=None,
+    col_target:Optional[str]=None,
     flag_evaluacion:bool=False    
     ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.DataFrame]:
         '''
 
         '''
-        if cols_target is None:
-            cols_target = COLS_TARGET
+        if col_target is None:
+            col_target = "target_rank"
 
         # Predictores a descartar: variables excluidas y labels
-        columnas_a_descartar = set(cols_excluded+cols_target)
+        cols_excluded = cargar_cols_filtrar().get(col_target,[])
+        columnas_a_descartar = set(cols_excluded+[col_target])
         cols_drop = [c for c in columnas_a_descartar if c in df_train.columns]
 
         X_train = df_train.drop(columns=cols_drop)
-        Y_train = df_train[cols_target]
+        Y_train = df_train[col_target]
 
         if flag_evaluacion:
-            Y_test = df_test[cols_target]
+            Y_test = df_test[col_target]
             
         else:
             Y_test=pd.DataFrame() # dataframe vacio
             # se asigna a nan para evitar error al eliminar columnas
-            df_test.loc[:, cols_target] = np.nan 
+            df_test.loc[:, col_target] = np.nan 
         
         X_test = df_test.drop(columns=cols_drop)
 
@@ -181,19 +181,20 @@ def separar_predictores_y_objetivo(
 
 
 def preprocesar_entrenamiento(
-        variables_a_excluir:list[str]
-        )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
+)->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
             # Cargar fichero de precios
-            df = cargar_datos_clean()
+            df_clean = cargar_datos_clean()
+
+            # Convertir a panel long
+            df_panel = wide_to_long_panel(df_clean).set_index('date')
 
             # Separar datos de entrenamiento y datos live
-            ultima_fecha = df.index.max()
-            df_train, df_live = separar_train_test(df=df, fecha=ultima_fecha)
+            ultima_fecha = df_panel.index.max()
+            df_train, df_live = separar_train_test(df=df_panel, fecha=ultima_fecha)
 
             X_train, y_train, X_live, _ = separar_predictores_y_objetivo(
                 df_train=df_train, 
                 df_test=df_live, 
-                cols_excluded=variables_a_excluir,
                 flag_evaluacion=False
                 )
 
@@ -281,15 +282,17 @@ def categorizar_con_bins(
 
 
 def preprocesar_evaluacion(
-        variables_a_excluir:list[str],
         test_size:float=0.2
         )->tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, datetime]:
             # Cargar fichero de precios
-            df = cargar_datos_clean()
+            df_clean = cargar_datos_clean()
+
+            # Convertir a panel long
+            df_panel = wide_to_long_panel(df_clean).set_index('date')
 
             # Primero se remueven los datos live (ultima fecha contemporanea)
-            ultima_fecha = df.index.max()
-            df_train, _ = separar_train_test(df=df, fecha=ultima_fecha)
+            ultima_fecha = df_panel.index.max()
+            df_train, _ = separar_train_test(df=df_panel, fecha=ultima_fecha)
 
             # Luego de remover los datos live, se separan los datos de train y validacion
             split_idx = int(len(df_train) * (1 - test_size))
@@ -300,7 +303,6 @@ def preprocesar_evaluacion(
             X_train, Y_train, X_test, Y_test = separar_predictores_y_objetivo(
                     df_train=df_train, 
                     df_test=df_test, 
-                    cols_excluded=variables_a_excluir,
                     flag_evaluacion=True
                     )
             
@@ -842,8 +844,6 @@ def cargar_cols_filtrar()->dict:
         return {}
 
 
-# Predictores a eliminar para todos los pares
-filtro_general = []
 
 '''
 Bloque principal
@@ -852,43 +852,35 @@ Ejecucion desde el terminal:
 python -m src.modeling
 '''
 def main():
-    predictores_a_excluir = filtro_general
-    X_train, Y_train, X_live, _, ultima_fecha = preprocesar_entrenamiento(variables_a_excluir=predictores_a_excluir)
 
+    X_train, Y_train, X_live, _, ultima_fecha = preprocesar_entrenamiento()
+
+    # Columnas numericas y categoricas
+    cols_cat = ['Currency']
+    cols_numeric = X_train.select_dtypes(include=np.number).columns.tolist()
     # Inicializar modelo y entrenar
-    #nombre_modelo = 'MultiTaskElasticNetCV'
-    tscv = TimeSeriesSplit(n_splits=5)
-    pipe_mt_enet = Pipeline([
-        ("scaler", RobustScaler()),  
-        (
-            "model",
-            MultiTaskElasticNetCV(
-                # Bajar l1_ratio permite mantener más variables correlacionadas con suavizado L2
-                l1_ratio=[0.01, 0.03, 0.05, 0.1, 0.2, 0.5],
-                # Bajar el techo de alphas de 10.0 a ~0.8 para evitar colapso a 1 sola variable
-                alphas=np.logspace(-3, -0.1, 40),  # Rango: [0.001, 0.794]
-                cv=tscv,
-                max_iter=10000,
-                random_state=42,
-                n_jobs=-1,
-            ),
-        ),
+    #nombre_modelo = 'RandomForestRegressor'
+    preprocessor = ColumnTransformer([
+        ('num', 'passthrough', cols_numeric),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), cols_cat)
     ])
-    nombre_modelo='Ridge'
-    pipe_ridge = Pipeline([
-        ("scaler", StandardScaler()),
-        ("model", RidgeCV(alphas=np.logspace(1, 5, 50), cv=tscv)),
-    ])  
+    pipe_rf = Pipeline([
+        ('pre', preprocessor),
+        ('model', RandomForestRegressor(
+            random_state=42,
+            n_estimators=300,
+            max_depth=4,
+            min_samples_leaf=30,
+            min_samples_split=50,
+            max_samples=0.3,
+            max_features=0.25
+        ))
+    ])
 
-    print(f"Entrenando modelo {nombre_modelo}...")
-    pipe_ridge.fit(X_train, Y_train)
+    pipe_rf.fit(X_train, Y_train)
 
     # Realizar predicciones
-    Y_live_pred = pd.DataFrame(
-        pipe_ridge.predict(X_live),
-        index=X_live.index,
-        columns=Y_train.columns
-    )
+    Y_live_pred = pipe_rf.predict(X_live)
 
     print("Entrenamiento finalizado.")
     print(f"Dimensiones del dataset de entrenamiento:", X_train.shape)
@@ -897,13 +889,11 @@ def main():
     #print(df_probabilidades.head().to_string(index=False))
 
     # Evaluar modelo
-    evaluar = True
+    evaluar = False
     if evaluar:
-        model = pipe_ridge.named_steps['model']
+        model = pipe_rf.named_steps['model']
 
-        X_train, Y_train, X_test, Y_test, fecha_corte = preprocesar_evaluacion(
-            variables_a_excluir=predictores_a_excluir
-            )
+        X_train, Y_train, X_test, Y_test, fecha_corte = preprocesar_evaluacion()
         print("Evaluando modelo...")
         print("Fecha de corte:", fecha_corte)
 

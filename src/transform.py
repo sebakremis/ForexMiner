@@ -580,22 +580,30 @@ def obtener_features_macro(
             # Unir con rendimientos de bonos
             df_merged = pd.concat([df_weekly, df_bonds_weekly], axis=1) 
 
-            # Aplicar shift(1) para modelado
-            df_weekly_features = aplicar_lag(
-                 df=df_merged,
-                 columnas=df_merged.columns.to_list(),
-                 quitar_original=True
-            ) 
+            df_merged = df_merged.copy().sort_index()
 
-            # Forzar la inclusión de la semana actual si no está presente
-            # Determinamos el lunes de la semana en curso
-            hoy = pd.Timestamp.now().normalize()
+            # Asegurar que la ultima semana se encuentre en el dataframe
+            tz = getattr(df_merged.index, "tz", None)
+            hoy = pd.Timestamp.now(tz=tz).normalize()
             lunes_actual = hoy - pd.Timedelta(days=hoy.weekday())
 
-            if lunes_actual not in df_weekly_features.index:
-                # La información para predecir la semana actual es exactamente
-                # el último estado consolidado sin shift (df_merged.iloc[-1])
-                df_weekly_features.loc[lunes_actual] = df_merged.iloc[-1]
+            if lunes_actual not in df_merged.index:
+                ultima_fecha = df_merged.index[-1]
+                if (lunes_actual - ultima_fecha).days > 7:
+                    raise ValueError(
+                        f"Gap detected: last available week is {ultima_fecha}, expected"
+                        f" {lunes_actual - pd.Timedelta(days=7)}"
+                )
+
+            df_merged.loc[lunes_actual] = np.nan
+
+            # Asegurar ordenamiento antes de aplicar el lag
+            df_merged = df_merged.sort_index()
+
+            # Aplicar lag a todas las variables
+            df_weekly_features = aplicar_lag(
+                df=df_merged, columnas=df_merged.columns.to_list(), quitar_original=True
+            )             
 
             return df_weekly_features
 
