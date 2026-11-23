@@ -9,8 +9,10 @@ import datetime as dt
 from pathlib import Path
 from typing import (
    Optional, Any,
-   Dict, List
+   Dict, List,
+   Sequence
    )
+import argparse
 from datetime import datetime
 import matplotlib.pyplot as plt
 import json
@@ -199,6 +201,46 @@ def preprocesar_datos(
                 )
 
             return X_train, y_train, X_live, y_live, ultima_fecha     
+
+
+# Construccion de pipeline
+
+def construir_pipe_rf(
+        X_sample: pd.DataFrame,
+        cat_cols: list[str] | None = None,
+        **rf_params
+)-> Pipeline:
+    '''
+    Construye un pipeline no entrenado de regresion RandomForest, junto con su preprocesado.
+    '''
+    cat_cols = cat_cols or ['Currency']
+    num_cols = [
+        col for col in X_sample.select_dtypes(include=np.number).columns
+        if col not in cat_cols
+    ]
+    preprocessor = ColumnTransformer([
+        ('num', 'passthrough', num_cols),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), cat_cols)
+    ])
+
+    # Parametros por defecto
+    default_params = {
+            'random_state': 42,
+            'n_estimators': 400,
+            'max_depth': 3,
+            'min_samples_leaf': 25,
+            'min_samples_split': 60,
+            'max_samples': 0.4,
+            'max_features': 0.4,
+        } 
+
+    # Sobre escribir con los parametros pasados a la funcion
+    model_params = {**default_params, **rf_params}
+    return Pipeline([
+        ('pre', preprocessor),
+        ('model', RandomForestRegressor(**model_params))
+    ])   
+
 
 # Funciones de evaluacion
 
@@ -411,117 +453,105 @@ def registrar_evaluacion_excel(
 # Funciones complementarias de evaluacion
 
 def optimizar(
-        simbolo:str='EURUSD'
+        n_splits:int=5
 ):
-    # Predictores a eliminar de los datasets train y live
-    predictores_a_excluir = []
-    X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(par=simbolo, variables_a_excluir=predictores_a_excluir)
+    X_train, y_train, _, _, _ = preprocesar_datos()
 
-    # 1. Concatenar train y test
-    X_combined = np.vstack([X_train, X_test])
-    y_combined = np.concatenate([y_train, y_test])
+    tscv = TimeSeriesSplit(n_splits=n_splits)
 
-    # 2. Definir índices: -1 entrena, 0 evalúa
-    split_indices = np.full(len(X_combined), -1)
-    split_indices[len(X_train):] = 0
-
-    pds = PredefinedSplit(test_fold=split_indices)
-
-    print("Configurando GridSearchCV para {simbolo}")
-    modelo_base = Pipeline(steps=[
-        ('rf', RandomForestClassifier(random_state=42))
-    ])
+    print("Configurando GridSearchCV")
+    modelo_base = construir_pipe_rf(X_sample=X_train)
 
     param_grid = {
-        'rf__n_estimators': [400],
-        'rf__max_depth': [4],
-        'rf__min_samples_leaf': [33],
-        'rf__min_samples_split': [4],
-        'rf__max_samples': [0.45],
-        'rf__max_features': [0.3],
-        'rf__class_weight': ['balanced_subsample']
+        'model__n_estimators': [400],
+        'model__max_depth': [3],
+        'model__min_samples_leaf': [25],
+        'model__min_samples_split': [60], # >= 2* min_samples_leaf
+        'model__max_samples': [0.4],
+        'model__max_features': [0.4],
     }
 
     # Configurar el GridSearchCV
     grid_search = GridSearchCV(
         estimator=modelo_base,
         param_grid=param_grid,
-        scoring='f1_macro',
-        cv=pds,
+        scoring='neg_root_mean_squared_error',
+        cv=tscv,
         n_jobs=-1,
         verbose=2,
-        refit=True # Al terminar, entrena el mejor modelo automáticamente
+        refit=False # No es necesario reentrenar con el mejor modelo
     )
 
     # Ajusta probando hiperparámetros entrenando en train y testeando en test
-    grid_search.fit(X_combined, y_combined)
+    grid_search.fit(X_train, y_train)
 
     # Resultados
-    best_model = grid_search.best_estimator_
-    preds = best_model.predict(X_test)
-    print(classification_report(y_test, preds))
-    print("Mejores hiperparámetros encontrados:")
-    print(grid_search.best_params_)
+    clean_params = {
+        k.replace('model__', ''): v
+        for k, v in grid_search.best_params_.items()
+    }
+    print("\n--- Mejores hiper-parámetros ---")
+    for k, v in clean_params.items():
+        print(f"    '{k}': {repr(v)},")
+
+    # Mostrar Top 5 combinaciones para evaluar estabilidad entre folds
+    results_df = (
+        pd.DataFrame(grid_search.cv_results_)
+        .sort_values('rank_test_score')
+        [['rank_test_score', 'mean_test_score', 'std_test_score', 'params']]
+        .head(5)
+    )
+    print("\n--- Top 5 Combinaciones ---")
+    print(results_df.to_string(index=False))
 
 
-def curva_desempenio(
-        simbolo: str = "EURUSD",
-        test_size: float=0.2
-    ):
+def graficar_curva(n_splits:int=5):
         '''
-        Grafica la evolucion del desempeno del modelo al aumentar la complejidad.
-        Identifica el trade-off entre Sesgo y Varianza:
-        - Alto sesgo (underfitting): Metricas de train y test bajas y cercanas entre si.
-        - Zona de equilibrio: punto donde la metrica test alcanza su valor optimo antes de degradarse.
-        - Alta varianza (overfitting): la metrica de train sigue subiendo, mientras que la de
-        test comienza a caer o se abre una brecha (generalization gap).
+        Grafica la evolución del desempeño (-RMSE) del modelo al aumentar la complejidad.
+        Identifica el trade-off entre Sesgo y Varianza (valores más altos / cercanos a 0 = mejor):
+        - Alto sesgo (underfitting): Métricas de train y test bajas (muy negativas) y cercanas entre sí.
+        - Zona de equilibrio: Punto donde la métrica de test alcanza su máximo antes de degradarse.
+        - Alta varianza (overfitting): La métrica de train sigue subiendo hacia 0, mientras que la de
+        test comienza a caer y se abre una brecha (generalization gap).
         '''
-        predictores_a_excluir = []
-        X_train, y_train, X_test, y_test, _ = preprocesar_evaluacion(
-            par=simbolo, 
-            variables_a_excluir=predictores_a_excluir,
-            test_size=test_size
-        )
+        X_train, y_train, _, _, _ = preprocesar_datos()
 
         complexity_var = 'max_depth'
         complexity_range = list(range(1, 10, 1))
         train_scores, test_scores = [], []
 
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+
         for value in complexity_range:
-            rf = RandomForestClassifier(
-                random_state=42,
-                n_estimators=400, 
-                max_depth=value,
-                min_samples_leaf=28,
-                min_samples_split=4,
-                max_samples=0.45,
-                max_features=0.3,
-                class_weight='balanced_subsample',              
-                n_jobs=1
+            # Modelo completo:
+            pipe_rf = construir_pipe_rf(X_sample=X_train, max_depth=value)
+
+            # Test de validacion cruzada
+            cv_results = cross_validate(
+                estimator = pipe_rf,
+                X=X_train,
+                y=y_train,
+                cv=tscv,
+                scoring='neg_root_mean_squared_error',
+                return_train_score=True,
+                n_jobs=-1
             )
-            rf.fit(X_train, y_train)
+            
+            # Metricas sobre entrenamiento y test
+            train_scores.append(cv_results['train_score'].mean())
+            test_scores.append(cv_results['test_score'].mean())
 
-            # Probabilidades en train y test
-            y_train_prob = rf.predict_proba(X_train)
-            y_test_prob = rf.predict_proba(X_test)
-
-            # Metricas roc_auc
-            train_auc = roc_auc_score(y_train, y_train_prob, multi_class='ovr', average='weighted')
-            test_auc = roc_auc_score(y_test, y_test_prob, multi_class='ovr', average='weighted')
-
-            train_scores.append(train_auc)
-            test_scores.append(test_auc)
 
         plt.figure(figsize=(8, 4.5))
-        plt.plot(complexity_range, train_scores, marker='o', label="Train AUC (Aproximación al sesgo)")
-        plt.plot(complexity_range, test_scores, marker='s', label="Test AUC (Generalización)")
+        plt.plot(complexity_range, train_scores, marker='o', label="Train -RMSE (Aproximación al sesgo)")
+        plt.plot(complexity_range, test_scores, marker='s', label="Test CV -RMSE (Generalización)")
         
         # Invertir la dirección del eje X (para Min Samples leaf):
         #plt.gca().invert_xaxis()
         
         plt.xlabel(complexity_var)
-        plt.ylabel("ROC AUC")
-        plt.title(f"Curva de Complejidad para el par {simbolo}")
+        plt.ylabel("-RMSE (mas alto = menor error)")
+        plt.title(f"Curva de Complejidad ({complexity_var})")
         plt.legend()
         plt.grid(True)
         plt.show()
@@ -531,34 +561,21 @@ def curva_desempenio(
 Bloque principal
 
 Ejecucion desde el terminal:
-python -m src.modeling
-'''
-def main():
 
+# Obtener predicciones sin evaluar el modelo:
+python -m src.modeling
+
+# Obtener predicciones y realizar evaluacion:
+python -m src.modeling --evaluar
+'''
+def main(
+        evaluar:bool=False
+):
+    # Preprocesar datos clean, separando variables y datos "live"
     X_train, y_train, X_live, _, ultima_fecha = preprocesar_datos()
 
-    # Columnas numericas y categoricas
-    cols_cat = ['Currency']
-    cols_numeric = X_train.select_dtypes(include=np.number).columns.tolist()
     # Inicializar modelo y entrenar
-    #nombre_modelo = 'RandomForestRegressor'
-    preprocessor = ColumnTransformer([
-        ('num', 'passthrough', cols_numeric),
-        ('cat', OneHotEncoder(handle_unknown='ignore'), cols_cat)
-    ])
-    pipe_rf = Pipeline([
-        ('pre', preprocessor),
-        ('model', RandomForestRegressor(
-            random_state=42,
-            n_estimators=300,
-            max_depth=4,
-            min_samples_leaf=30,
-            min_samples_split=50,
-            max_samples=0.3,
-            max_features=0.25
-        ))
-    ])
-
+    pipe_rf = construir_pipe_rf(X_sample=X_train)
     pipe_rf.fit(X_train, y_train)
 
     # Realizar predicciones
@@ -574,7 +591,6 @@ def main():
     print(resultados.sort_values(by='Prediction', ascending=False).to_string(index=False))
 
     # Evaluar modelo
-    evaluar = True
     if evaluar:
         print("\nEvaluación del modelo:")
         dict_evaluacion = evaluar_modelo(
@@ -583,7 +599,6 @@ def main():
             y_train=y_train
             )
 
-
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
             ultima_fecha=ultima_fecha,
@@ -591,6 +606,20 @@ def main():
         )
 
 
+def entrypoint_modeling(argv: Sequence[str] | None = None):
+    '''
+    Punto de entrada de la linea de comandos.
+    '''
+    parser = argparse.ArgumentParser(description="Módulo de Modelado")
+    parser.add_argument(
+        "--evaluar",
+        action="store_true",
+        help="Ejecuta la evaluacion del modelo tras el entrenamiento"
+    )
+    args = parser.parse_args(argv)
+
+    return main(evaluar=args.evaluar)
+
 
 if __name__ == '__main__':
-    main()
+    entrypoint_modeling()
