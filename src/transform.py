@@ -549,31 +549,50 @@ def imputar_interpolacion(
 def obtener_features_macro(
         df_b:pd.DataFrame,
         df_m:pd.DataFrame,
-        periodo:int
+        periodo:int=26
         ) -> pd.DataFrame:
             df_bonds_weekly = df_b.copy()
             df_macro = df_m.copy()
-            df_features_daily = pd.DataFrame(index=df_macro.index)
-
-            # Variaciones: variables adecuadas para las correlaciones con los retornos
-
-            # Vix index: variacion porcentual mediante diferencia logaritmica
-            vix_pct_col = "VIX_pct_diff"
-            df_features_daily[vix_pct_col] = np.log(df_macro["VIX_index"]).diff()
-
-            # Variables originalmente expresadas en tasas (variación absoluta delta)
-            yield_delta_col = "Real_yield_delta"
-            df_features_daily[yield_delta_col] = df_macro["Real_yield_10y"].diff()
+            # Se aplica forward fill para cubrir huecos en datos (necesario para datos STLFSI semanales)
+            df_macro = df_macro.ffill()
 
             # Lags por retardo de publicación (en DÍAS HÁBILES de mercado)
+            df_daily_lagged = pd.DataFrame(index=df_macro.index)
+
             # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
-            cols_lag_1d = [vix_pct_col, yield_delta_col]
-            df_features_daily[cols_lag_1d] = df_features_daily[cols_lag_1d].shift(1)
+            cols_lag_1d = ["VIX_index", "Real_yield_10y"]
+            df_daily_lagged[cols_lag_1d] = df_macro[cols_lag_1d].shift(1)
+
+            # STLFSI: Se calcula al viernes T, pero la Fed lo publica el JUEVES T+1.
+            # Entre el viernes y el jueves hábil transcurren 4 días hábiles (Lun, Mar, Mié, Jue).
+            cols_lag_4d = ["St_louis_financial_stress"]
+            df_daily_lagged["St_louis_financial_stress"] = df_macro["St_louis_financial_stress"].shift(4)
 
             # Resampleo semanal estándar sobre los datos históricos, alineando al lunes previo
-            df_weekly = df_features_daily.resample("W-MON", label="left", closed="left").last()
-
+            df_weekly = df_daily_lagged.resample("W-MON", label="left", closed="left").last()
             df_weekly.index.name = "Date"
+
+            # Calculo de features: Variaciones y Velocidades
+
+            # Vix index: variacion porcentual mediante diferencia logaritmica
+            vix_log = np.log(df_weekly["VIX_index"])
+            df_weekly["VIX_pct_diff"] = vix_log.diff()
+            df_weekly[f"VIX_vel{periodo}w"] = vix_log.diff(periodo) / periodo
+
+            # Variables originalmente expresadas en tasas (variación absoluta delta)
+
+            # Real Yield
+            ry = df_weekly["Real_yield_10y"]
+            df_weekly["Real_yield_delta"] = ry.diff()
+            df_weekly[f"Real_yield_vel{periodo}w"] = ry.diff(periodo) / periodo
+
+            # STLFSI
+            STLFSI = df_weekly["St_louis_financial_stress"]
+            df_weekly["STLFSI_delta"] = STLFSI.diff()
+            df_weekly[f"STLFSI_vel{periodo}w"] = STLFSI.diff(periodo) / periodo
+
+            # Se eliminan las columnas macro originales
+            df_weekly = df_weekly.drop(columns=cols_lag_1d+cols_lag_4d)
 
             # Unir con rendimientos de bonos
             df_merged = pd.concat([df_weekly, df_bonds_weekly], axis=1) 
@@ -725,7 +744,11 @@ def post_procesar(
         df_divisas:pd.DataFrame
         ):
             # Obtener exposiciones por divisa para variables macro
-            columnas_macro_delta = ["VIX_pct_diff_lag1", "Real_yield_delta_lag1"]
+            columnas_vix = encontrar_columnas(df, cadena="VIX_")
+            columnas_ry = encontrar_columnas(df, cadena="Real_yield_")
+            columnas_stlfsi = encontrar_columnas(df, cadena="STLFSI_")
+
+            columnas_macro_delta = columnas_vix+columnas_ry+columnas_stlfsi
             df = calcular_exposiciones(df, cols=columnas_macro_delta)
             df = df.drop(columns=columnas_macro_delta)
 
@@ -735,7 +758,8 @@ def post_procesar(
             df_labels = rankear_divisas(df_currencies=df_divisas, normalize=True)
 
             # Eliminar missings iniciales
-            print(df.isna().sum()[df.isna().sum() > 0])
+            print("\nTop 5 Valores missings por variable:")
+            print(df.isna().sum()[df.isna().sum() > 0].sort_values(ascending=False).head())
             df = df.dropna()
 
             # Separar predictores
@@ -771,6 +795,7 @@ def post_procesar(
             # Se eliminan posibles missings luego de transformar
             df_final = df_final.dropna()
 
+            print("\n Datos limpios finales:")
             print(df_final.info())
 
             # Se guardan los datos depurados
@@ -792,7 +817,7 @@ def main():
     macro_features = obtener_features_macro(
             df_b=bonds_raw, 
             df_m=macro_raw,
-            periodo=52
+            periodo=26
             )
     # Cargar fichero de precios y pre-procesar
     precios_raw = preprocesar_precios()
@@ -800,7 +825,7 @@ def main():
     # Calcular retornos para todos los activos
     df_precios = calcular_retornos(precios_raw)
 
-    # Expresar cotizaciones por divisa forex
+    # Expresar retornos por divisa forex
     dict_divisas = {
          # Cotizaciones directas:
          "EUR_return": df_precios["EURUSD_return"],

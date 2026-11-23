@@ -91,7 +91,11 @@ def wide_to_long_panel(
       "Oil_return_zscore_exposure_lag1",
       "Gold_return_zscore_exposure_lag1",
       "VIX_pct_diff_lag1_zscore_exposure",
-      "Real_yield_delta_lag1_zscore_exposure"
+      "VIX_vel26w_lag1_zscore_exposure",
+      "Real_yield_delta_lag1_zscore_exposure",
+      "Real_yield_vel26w_lag1_zscore_exposure",
+      "STLFSI_delta_lag1_zscore_exposure",
+      "STLFSI_vel26w_lag1_zscore_exposure"
   ]
 
   spread_suffixes = [
