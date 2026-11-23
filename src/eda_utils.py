@@ -212,6 +212,33 @@ def rankear_variables(
     return tablaCramer
 
 
+def categorizar_por_cuantiles(
+        serie:pd.Series,
+        num_cuantiles:int=3
+)->pd.Series:
+    s_num = pd.to_numeric(serie, errors='coerce')
+
+    empty_fallback = pd.Series(
+        pd.NA, index=serie.index, name=serie.name, dtype="Int64"
+    ).astype("category")
+
+    # Verificar datos suficientes
+    if s_num.count() < num_cuantiles or serie.nunique() < 2:
+        return empty_fallback
+
+    try:
+        cuantiles = pd.qcut(
+            s_num,
+            q=num_cuantiles,
+            labels=False,
+            duplicates="drop"
+        )
+        # Sumar 1 para etiquetar de 1 a N
+        serie_out = (cuantiles+1).astype("Int64")
+        return serie_out.astype("category")
+    except ValueError:
+        return empty_fallback
+
 
 def pintar_violin_plots(
     df: pd.DataFrame, numeric_cols: list[str], target_col: str
