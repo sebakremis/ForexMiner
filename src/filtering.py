@@ -43,7 +43,7 @@ def main():
     Genera un fichero JSON con las columnas a filtrar para cada par de divisas.
     '''
     fichero = Path(CARPETA_DATOS) / "cols_filtrar.json"
-    col_objetivo = "target_rank"
+    col_objetivo = "Target_rank"
     cols_filtrar = filtrar_cols(col_objetivo)
 
     with fichero.open("w", encoding="utf-8") as f:

@@ -58,96 +58,73 @@ def cargar_cols_filtrar()->dict:
 
 
 def wide_to_long_panel(
-    df_wide: pd.DataFrame,
-    currencies: Optional[List[str]] = None,
-    include_macro: bool = True,
-) -> pd.DataFrame:
-  """Transforma el DataFrame semanal ancho en un panel largo (6370 filas)
+          df_wide:pd.DataFrame,
+          currencies: Optional[list[str]] = None
+)->pd.DataFrame:
+    """Transforma el DataFrame semanal ancho en un panel largo
+    con una fila por (fecha, divisa), alineando features propios de cada divisa,
+    spreads de tasas direccionales y variables macro globales.
+    """
 
-  con una fila por (fecha, divisa), alineando features propios de cada divisa,
-  spreads de tasas direccionales y variables macro globales.
-  """
-  if currencies is None:
-    currencies = DIVISAS
+    if currencies is None:
+        currencies = DIVISAS
 
-  # Excluir prefijos de divisas y pares con spread (mantiene DXY_vel_50d_lag1 en macro_cols)
-  prefixes_to_exclude = tuple(
-      [f"{c}_" for c in currencies]
-      + [f"{p}_" for p, _ in MAP_DIVISAS.values()]
-  )
-  macro_cols = [
-      col for col in df_wide.columns if not col.startswith(prefixes_to_exclude)
-  ]
+    # Extraer sufijos base desde "EUR_"
+    excluded_suffixes = {"return_rank"}
+    feature_suffixes = [
+         col[4:] # len("EUR_") ==4
+         for col in df_wide.columns
+         if col.startswith("EUR_") and col [4:] not in excluded_suffixes
+    ]
 
-  ccy_feature_suffixes = [
-      "return_rank_lag1",
-      "return_skew_lag1",
-      "return_vol_dir_lag1_log",
-      "return_sma52_zscore_lag1",
-      "return_vol_ratio_lag1",
-      "return_sma26_delta_sma52_zscore_lag1",
-      "return_std_lag1_log",
-      "SPY_return_zscore_exposure_lag1",
-      "Oil_return_zscore_exposure_lag1",
-      "Gold_return_zscore_exposure_lag1",
-      "VIX_pct_diff_lag1_zscore_exposure",
-      "VIX_vel26w_lag1_zscore_exposure",
-      "Real_yield_delta_lag1_zscore_exposure",
-      "Real_yield_vel26w_lag1_zscore_exposure",
-      "STLFSI_delta_lag1_zscore_exposure",
-      "STLFSI_vel26w_lag1_zscore_exposure"
-  ]
+    # Extraer sufijos de yield spreads desde "EURUSD_"
+    spread_suffixes = [
+         col[7:] # len("EURUSD_") ==7
+         for col in df_wide.columns
+         if col.startswith("EURUSD_") and "yield_spread" in col
+    ]
 
-  spread_suffixes = [
-      "yield_spread_zscore_lag1"
-  ]
+    panel_frames = []
 
-  panel_frames = []
+    for ccy in currencies:
+        # Target y features
+        data = {
+              "Currency": ccy,
+              "Target_rank": df_wide[f"{ccy}_return_rank"],
+              **{
+                   suf:df_wide.get(f"{ccy}_{suf}", np.nan)
+                   for suf in feature_suffixes
+              }
+         }
 
-  for ccy in currencies:
-    df_ccy = pd.DataFrame(index=df_wide.index)
-    df_ccy["Currency"] = ccy
+        # Yield spreads alineados con MAP_DIVISAS
+        if ccy in MAP_DIVISAS:
+            pair_name, sign = MAP_DIVISAS[ccy]
+            for suf in spread_suffixes:
+                data[suf] = sign * df_wide[f"{pair_name}_{suf}"]
+        else:
+            # Para USD, promedio ponderado inverso de los 6 pares
+            for suf in spread_suffixes:
+                usd_spreads = pd.concat(
+                    [-sign * df_wide[f"{pair}_{suf}"] for pair, sign in MAP_DIVISAS.values()],
+                    axis=1
+                )
+                data[suf] = usd_spreads.mean(axis=1)
 
-    # 1. Target de la semana actual
-    df_ccy["target_rank"] = df_wide[f"{ccy}_return_rank"]
+        panel_frames.append(pd.DataFrame(data, index=df_wide.index))
 
-    # 2. Features propios de la divisa (si no existe para USD, rellena con NaN)
-    for suf in ccy_feature_suffixes:
-      col_name = f"{ccy}_{suf}"
-      df_ccy[suf] = df_wide[col_name] if col_name in df_wide.columns else np.nan
+    # Apilar y ordenar por Date, Currency
+    df_long = pd.concat(panel_frames, axis=0)
+    df_long.index.name = "date"
+    df_long = (
+        df_long.reset_index()
+        .sort_values(by=["date", "Currency"])
+        .reset_index(drop=True)
+    )
+    df_long["Currency"] = df_long["Currency"].astype("category")
 
-    # 3. Yield spreads alineados direccionalmente (positivo = diferencial a favor de 'ccy')
-    if ccy in MAP_DIVISAS:
-      pair_name, sign = MAP_DIVISAS[ccy]
-      for suf in spread_suffixes:
-        df_ccy[suf] = sign * df_wide[f"{pair_name}_{suf}"]
-    else:
-      # Para USD: promedio ponderado inverso de los 6 pares contra USD (o 0.0 si prefieres neutral)
-      for suf in spread_suffixes:
-        usd_spreads = [
-            -sign * df_wide[f"{pair}_{suf}"]
-            for pair, sign in MAP_DIVISAS.values()
-        ]
-        df_ccy[suf] = pd.concat(usd_spreads, axis=1).mean(axis=1)
-
-    # 4. Variables macro globales (incluye DXY_vel_50d_lag1)
-    if include_macro:
-      df_ccy = pd.concat([df_ccy, df_wide[macro_cols]], axis=1)
-
-    panel_frames.append(df_ccy)
-
-  # Apilar las 7 divisas y ordenar cronológicamente por (date, Currency)
-  df_long = pd.concat(panel_frames, axis=0)
-  df_long.index.name = "date"
-  df_long = (
-      df_long.reset_index()
-      .sort_values(by=["date", "Currency"])
-      .reset_index(drop=True)
-  )
-  df_long["Currency"] = df_long["Currency"].astype("category")
-
-  return df_long
-
+    return df_long
+            
 
 def separar_train_test(
         df:pd.DataFrame,
@@ -171,7 +148,7 @@ def separar_predictores_y_objetivo(
 
         '''
         if col_target is None:
-            col_target = "target_rank"
+            col_target = "Target_rank"
 
         # Predictores a descartar: variables excluidas y labels
         cols_excluded = cargar_cols_filtrar().get(col_target,[])

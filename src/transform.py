@@ -308,6 +308,14 @@ def calcular_metricas_retornos(
         nuevas_columnas[f"{col}_sma{periodo_largo}_zscore"] = calcular_zscore(sma_larga, asumir_media_cero=True)
 
         if periodo_corto:
+            # Velocidad: tasa de cambio de los retornos
+            vel = df[col].diff(periodo_corto) / periodo_corto
+            nuevas_columnas[f"{col}_vel_zscore"] = calcular_zscore(vel, asumir_media_cero=True)
+
+            # Aceleracion: tasa de cambio de la velocidad
+            acel = vel.diff(periodo_corto) / periodo_corto
+            nuevas_columnas[f"{col}_accel_zscore"] = calcular_zscore(acel, asumir_media_cero=True)
+
             # Ratio de volatilidad: ratio entre desvio corto y largo
             desvio_corto = df[col].rolling(window=periodo_corto).std()           
             nuevas_columnas[f"{col}_vol_ratio"] = (desvio_corto + EPSILON) / (nuevas_columnas[desvio_col] + EPSILON)
@@ -572,12 +580,13 @@ def obtener_features_macro(
             df_weekly = df_daily_lagged.resample("W-MON", label="left", closed="left").last()
             df_weekly.index.name = "Date"
 
-            # Calculo de features: Variaciones y Velocidades
+            # Calculo de features: Variaciones, Velocidades y Aceleraciones
 
             # Vix index: variacion porcentual mediante diferencia logaritmica
             vix_log = np.log(df_weekly["VIX_index"])
             df_weekly["VIX_pct_diff"] = vix_log.diff()
             df_weekly[f"VIX_vel{periodo}w"] = vix_log.diff(periodo) / periodo
+            df_weekly[f"VIX_accel{periodo}w"] = df_weekly[f"VIX_vel{periodo}w"].diff(periodo) / periodo
 
             # Variables originalmente expresadas en tasas (variación absoluta delta)
 
@@ -585,11 +594,13 @@ def obtener_features_macro(
             ry = df_weekly["Real_yield_10y"]
             df_weekly["Real_yield_delta"] = ry.diff()
             df_weekly[f"Real_yield_vel{periodo}w"] = ry.diff(periodo) / periodo
+            df_weekly[f"Real_yield_accel{periodo}w"] = df_weekly[f"Real_yield_vel{periodo}w"].diff(periodo) / periodo
 
             # STLFSI
             STLFSI = df_weekly["St_louis_financial_stress"]
             df_weekly["STLFSI_delta"] = STLFSI.diff()
             df_weekly[f"STLFSI_vel{periodo}w"] = STLFSI.diff(periodo) / periodo
+            df_weekly[f"STLFSI_accel{periodo}w"] = df_weekly[f"STLFSI_vel{periodo}w"].diff(periodo) / periodo
 
             # Se eliminan las columnas macro originales
             df_weekly = df_weekly.drop(columns=cols_lag_1d+cols_lag_4d)
