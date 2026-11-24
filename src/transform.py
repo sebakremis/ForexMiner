@@ -71,7 +71,7 @@ def calcular_yield_spreads(df:pd.DataFrame):
         quote_currency = pair[3:6]
 
         serie_yield_spread = df_out[f"{base_currency}_yield_avg"] - df_out[f"{quote_currency}_yield_avg"]
-        df_out[f"{pair}_yield_spread_zscore"] = calcular_zscore(serie_yield_spread, usar_mad=False, exponencial=True, asumir_media_cero=False)
+        df_out[f"{pair}_Yield_spread_zscore"] = calcular_zscore(serie_yield_spread, usar_mad=False, exponencial=True, asumir_media_cero=False)
 
     df_out = df_out.drop(columns=columnas_originales)
     return df_out
@@ -269,7 +269,7 @@ def calcular_retornos(
     nuevas_columnas = {}
 
     for simbolo in simbolos:
-        nuevas_columnas[f"{simbolo}_return"] = np.log(df[f"{simbolo}_Close"]).diff()
+        nuevas_columnas[f"{simbolo}_Ret"] = np.log(df[f"{simbolo}_Close"]).diff()
 
     return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
 
@@ -287,7 +287,7 @@ def calcular_metricas_retornos(
     - Volatilidad direccional
     - Ratio de volatilidad si se especifica periodo corto
     '''
-    retornos_simbolos = [f"{simbolo}_return" for simbolo in simbolos]
+    retornos_simbolos = [f"{simbolo}_Ret" for simbolo in simbolos]
     nuevas_columnas = {}
 
     for col in retornos_simbolos:
@@ -329,75 +329,26 @@ def calcular_metricas_retornos(
     return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)          
 
 
-def calcular_hl_spread(
+def calcular_open_gap(
         df:pd.DataFrame,
         simbolos:list[str]
     )->pd.DataFrame:
         nuevas_columnas = {}
         for simbolo in simbolos:
-            columna_high = f"{simbolo}_High"
-            columna_low = f"{simbolo}_Low"
-
-            # High - Low Spread: diferencia porcentual entre el precio máximo y mínimo
-            spread = calcular_pct_diff(df[columna_high], df[columna_low])
-
-            # Proteger contra bad ticks donde High < Low
-            nuevas_columnas[f"{simbolo}_HL_spread"] = spread.clip(lower=0.0)
-    
-
-        return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
-
-
-def calcular_open_gap(
-        df:pd.DataFrame,
-        simbolos:list[str],
-        periodo:int=20
-    )->pd.DataFrame:
-        df_out = df.copy()
-        for simbolo in simbolos:
             columna_open = f"{simbolo}_Open"
             columna_close = f"{simbolo}_Close"
 
             # Open Gap: diferencia porcentual entre el cierre anterior y la apertura actual
-            open_gap = calcular_pct_diff(df_out[columna_open], df_out[columna_close], lag_base=1)
+            nuevas_columnas[f"{simbolo}_Open_gap"] = calcular_pct_diff(df[columna_open], df[columna_close], lag_base=1)
 
-            # Se calcula el z-score y se comprimen colas extremas
-            z_gap = calcular_zscore(
-                serie=open_gap,
-                periodo=periodo,
-                usar_mad=False, # Obligatorio: MAD sera 0 si mas de la mitad de las velas no tienen gap
-                exponencial=True, # Adaptacion rapida a cambios
-                asumir_media_cero=True, # preserva el signo del gap
-            )
-            df_out[f"{simbolo}_Open_gap_zscore"] = np.arcsinh(z_gap)
-
-        return df_out
+        return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
     
-
-def calcular_log_rvol(
-    serie_vol: pd.Series, periodo: int = 20, min_periodos: int | None = None
-    ) -> pd.Series:
-        """Calcula el logaritmo del Volumen Relativo (RVOL) estrictamente causal."""
-        if min_periodos is None:
-            min_periodos = periodo
-
-        # Mediana histórica hasta t-1 para evitar distorsión por spikes previos
-        vol_base = (
-            serie_vol.shift(1)
-            .rolling(window=periodo, min_periods=min_periodos)
-            .median()
-        )
-
-        # RVOL centrado en 1.0 -> log(RVOL) centrado en 0.0
-        rvol = (serie_vol + 1e-8) / (vol_base + 1e-8)
-        return np.log(rvol)
-
 
 def calcular_exposiciones(
           df:pd.DataFrame,
           cols:list[str],
           lag_return:int=0,
-          ventana:int=52,
+          ventana:int=26,
           min_periodos:int | None=None
 )->pd.DataFrame:
     '''
@@ -410,7 +361,7 @@ def calcular_exposiciones(
     
     nuevas_columnas = {}
     for ccy in DIVISAS:
-        ccy_ret = calcular_zscore(df[f"{ccy}_return"], asumir_media_cero=True).shift(lag_return)
+        ccy_ret = calcular_zscore(df[f"{ccy}_Ret"], asumir_media_cero=True).shift(lag_return)
         for col in cols:
             series = calcular_zscore(df[col], asumir_media_cero=True).clip(-CLIP_Z, CLIP_Z)
 
@@ -470,11 +421,16 @@ def obtener_features_precios(
         ) 
 
     # Columnas de retornos por grupo
-    retornos_divisas = [f"{divisa}_return" for divisa in DIVISAS]
-    retornos_otros_activos = [f"{activo}_return" for activo in OTROS_ACTIVOS_COLS]
+    retornos_divisas = [f"{divisa}_Ret" for divisa in DIVISAS]
+    retornos_otros_activos = [f"{activo}_Ret" for activo in OTROS_ACTIVOS_COLS]
 
     # Exposicion por divisa de los retornos de otros activos
-    df_features = calcular_exposiciones(df=df_features, cols=retornos_otros_activos) 
+    df_features = calcular_exposiciones(df=df_features, cols=retornos_otros_activos)
+
+    # Open gap: se calcula para el indice SPY y luego su exposicion por divisa
+    df_features = calcular_open_gap(df=df_features, simbolos=["SPY"])
+    cols_open_gap = encontrar_columnas(df_features.columns.tolist(), cadena="_Open_gap")
+    df_features = calcular_exposiciones(df=df_features, cols=cols_open_gap) 
 
     # Eliminar columnas absolutas (originales excepto retornos divisas)
     
@@ -488,7 +444,7 @@ def obtener_features_precios(
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
 
     # Se exluyen labels y columnas open gap al ser conocidos luego de la apertura semanal
-    cols_open_gap = encontrar_columnas(columnas_relativas, cadena="_Open_gap")
+    
     cols_exclude = set(cols_open_gap + cols_divisas)
     variables_restantes = [col for col in columnas_relativas if col not in cols_exclude]
 
@@ -719,7 +675,7 @@ def descomponer_retornos(df_returns_xxx_usd:pd.DataFrame)->pd.DataFrame:
 
     # s_k = r_{k/USD} + s_USD
     df_currencies = df_returns_xxx_usd.add(usd_ret, axis=0)
-    df_currencies["USD_return"] = usd_ret
+    df_currencies["USD_Ret"] = usd_ret
 
     return df_currencies
 
@@ -785,17 +741,6 @@ def post_procesar(
             columnas_log = columnas_std + columnas_vol_dir
             df_transform = transformar_log(df_predictores, cols=columnas_log)
 
-            # Transformaciones yeo-johnson
-            cols_hl_spread = encontrar_columnas(columnas_features, f"_HL_spread_")
-
-            columnas_yeo = cols_hl_spread 
-            df_transform = transformar_yeo(
-                df=df_transform,
-                columnas=columnas_yeo,
-                min_periodos=50,
-                step=20,
-                reemplazar=True,
-            )
             # Se aplica lag sobre labels para usar como predictores
             df_labels = aplicar_lag(df=df_labels, columnas=df_labels.columns.to_list(), quitar_original=False)
 
@@ -839,14 +784,14 @@ def main():
     # Expresar retornos por divisa forex
     dict_divisas = {
          # Cotizaciones directas:
-         "EUR_return": df_precios["EURUSD_return"],
-         "GBP_return": df_precios["GBPUSD_return"],
-         "AUD_return": df_precios["AUDUSD_return"],
+         "EUR_Ret": df_precios["EURUSD_Ret"],
+         "GBP_Ret": df_precios["GBPUSD_Ret"],
+         "AUD_Ret": df_precios["AUDUSD_Ret"],
 
          # Cotizaciones invertidas:
-         "JPY_return": -df_precios["USDJPY_return"],
-         "CAD_return": -df_precios["USDCAD_return"],
-         "CHF_return": -df_precios["USDCHF_return"]
+         "JPY_Ret": -df_precios["USDJPY_Ret"],
+         "CAD_Ret": -df_precios["USDCAD_Ret"],
+         "CHF_Ret": -df_precios["USDCHF_Ret"]
     }     
 
     # Crear df de retornos por divisa
@@ -857,7 +802,7 @@ def main():
     cols_divisas = df_divisas.columns.to_list()
 
     # Se eliminan retornos de pares forex, reemplazandolos por retornos de divisas
-    retornos_pares = [f"{par}_return" for par in FOREX_COLS]
+    retornos_pares = [f"{par}_Ret" for par in FOREX_COLS]
     df_precios = df_precios.drop(columns=retornos_pares)
     df_retornos = pd.concat([df_precios, df_divisas], axis=1, sort=True)
 

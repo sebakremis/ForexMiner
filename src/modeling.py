@@ -70,7 +70,7 @@ def wide_to_long_panel(
         currencies = DIVISAS
 
     # Extraer sufijos base desde "EUR_"
-    excluded_suffixes = {"return_rank"}
+    excluded_suffixes = {"Ret_rank"}
     feature_suffixes = [
          col[4:] # len("EUR_") ==4
          for col in df_wide.columns
@@ -81,7 +81,7 @@ def wide_to_long_panel(
     spread_suffixes = [
          col[7:] # len("EURUSD_") ==7
          for col in df_wide.columns
-         if col.startswith("EURUSD_") and "yield_spread" in col
+         if col.startswith("EURUSD_") and "Yield_spread" in col
     ]
 
     panel_frames = []
@@ -90,26 +90,18 @@ def wide_to_long_panel(
         # Target y features
         data = {
               "Currency": ccy,
-              "Target_rank": df_wide[f"{ccy}_return_rank"],
+              "Target_rank": df_wide[f"{ccy}_Ret_rank"],
               **{
                    suf:df_wide.get(f"{ccy}_{suf}", np.nan)
                    for suf in feature_suffixes
               }
          }
 
-        # Yield spreads alineados con MAP_DIVISAS
-        if ccy in MAP_DIVISAS:
-            pair_name, sign = MAP_DIVISAS[ccy]
-            for suf in spread_suffixes:
-                data[suf] = sign * df_wide[f"{pair_name}_{suf}"]
-        else:
-            # Para USD, promedio ponderado inverso de los 6 pares
-            for suf in spread_suffixes:
-                usd_spreads = pd.concat(
-                    [-sign * df_wide[f"{pair}_{suf}"] for pair, sign in MAP_DIVISAS.values()],
-                    axis=1
-                )
-                data[suf] = usd_spreads.mean(axis=1)
+        # Yield spreads alineados con MAP_DIVISAS (0.0 para USD)
+        pair_name, sign = MAP_DIVISAS.get(ccy, (None, 0.0))
+        for suf in spread_suffixes:
+            data[suf] = sign * df_wide[f"{pair_name}_{suf}"] if pair_name else 0.0
+
 
         panel_frames.append(pd.DataFrame(data, index=df_wide.index))
 
@@ -181,7 +173,7 @@ def preprocesar_datos(
                 df_test=df_live
                 )
 
-            return X_train, y_train, X_live, y_live, ultima_fecha     
+            return X_train, y_train, X_live, y_live, ultima_fecha.strftime('%Y-%m-%d')     
 
 
 # Construccion de pipeline
@@ -208,7 +200,7 @@ def construir_pipe_rf(
     default_params = {
             'random_state': 42,
             'n_estimators': 400,
-            'max_depth': 3,
+            'max_depth': 4,
             'min_samples_leaf': 25,
             'min_samples_split': 60,
             'max_samples': 0.4,
@@ -335,6 +327,7 @@ def evaluar_modelo(
 def registrar_evaluacion_excel(
     dict_evaluacion: Dict[str, Any],
     ultima_fecha: Any,
+    modelo: str,
     y_pred: Any,
     filepath: str = "historico_modelos_reg.xlsx",
 ) -> None:
@@ -355,7 +348,8 @@ def registrar_evaluacion_excel(
         "run_id": run_id,
         "timestamp_registro": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "intervalo": INTERVALO_DEFECTO,
-        "ultima_fecha": str(ultima_fecha),
+        "modelo": str(modelo),
+        "fecha_pred": str(ultima_fecha),
         "y_pred": str(y_pred),
         # Métricas Full Train
         "train_r2": train_metrics.get("r2", np.nan),
@@ -433,7 +427,7 @@ def registrar_evaluacion_excel(
 
 # Funciones complementarias de evaluacion
 
-def optimizar(
+def optimizar_rf(
         n_splits:int=5
 ):
     X_train, y_train, _, _, _ = preprocesar_datos()
@@ -550,32 +544,38 @@ python -m src.modeling
 python -m src.modeling --evaluar
 '''
 def main(
+        nombre_modelo:str | None = None,
         evaluar:bool=False
 ):
     # Preprocesar datos clean, separando variables y datos "live"
     X_train, y_train, X_live, _, ultima_fecha = preprocesar_datos()
 
     # Inicializar modelo y entrenar
-    pipe_rf = construir_pipe_rf(X_sample=X_train)
-    pipe_rf.fit(X_train, y_train)
+    if nombre_modelo is None:
+        nombre_modelo = "rf"
+
+    if nombre_modelo == "rf":
+        pipe = construir_pipe_rf(X_sample=X_train)
+        pipe.fit(X_train, y_train)
 
     # Realizar predicciones
-    y_live_pred = pipe_rf.predict(X_live)
+    y_live_pred = pipe.predict(X_live)
     resultados = pd.DataFrame({
         'Currency': X_live['Currency'].values,
         'Prediction': y_live_pred
     })
+    resultados = resultados.sort_values(by='Prediction', ascending=False).to_string(index=False)
 
-    print("Entrenamiento finalizado.")
+    print(f"\nEntrenamiento del modelo {nombre_modelo} finalizado.")
     print(f"Dimensiones del dataset de entrenamiento:", X_train.shape)
-    print(f"\nPredicciones para el {ultima_fecha}:")
-    print(resultados.sort_values(by='Prediction', ascending=False).to_string(index=False))
+    print(f"\nPredicciones semanales para el {ultima_fecha}:")
+    print(resultados)
 
     # Evaluar modelo
     if evaluar:
-        print("\nEvaluación del modelo:")
+        print(f"\nEvaluación del modelo {nombre_modelo}:")
         dict_evaluacion = evaluar_modelo(
-            model=pipe_rf, 
+            model=pipe, 
             X_train=X_train, 
             y_train=y_train
             )
@@ -583,6 +583,7 @@ def main(
         registrar_evaluacion_excel(
             dict_evaluacion=dict_evaluacion,
             ultima_fecha=ultima_fecha,
+            modelo = nombre_modelo,
             y_pred=resultados # prediccion del modelo completo sobre la ultima fecha
         )
 
@@ -593,13 +594,18 @@ def entrypoint_modeling(argv: Sequence[str] | None = None):
     '''
     parser = argparse.ArgumentParser(description="Módulo de Modelado")
     parser.add_argument(
+         "--modelo",
+         type=str,
+         help="Nombre del modelo"
+    )
+    parser.add_argument(
         "--evaluar",
         action="store_true",
         help="Ejecuta la evaluacion del modelo tras el entrenamiento"
     )
     args = parser.parse_args(argv)
 
-    return main(evaluar=args.evaluar)
+    return main(nombre_modelo=args.modelo, evaluar=args.evaluar)
 
 
 if __name__ == '__main__':
