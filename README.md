@@ -14,16 +14,30 @@ Este proyecto implementa un pipeline ETL (Extracción, Transformación y Carga) 
 
 El proyecto esta diseñado para realizar predicciones contemporáneas en t (semana en curso), luego de la apertura del lunes de los mercados de Nueva York. La ejecución durante el fin de semana permite evaluar las predicciones para la semana previa.
 
+### Ejemplo de Predicciones (ranking descendente):
 ![Ejemplo de predicciones](./pictures/Screenshot_predicciones.png)
 
-Cuenta con tres fases principales:
-* **Extracción**: obtención de datos a través de 2 APIs gratuitas: `yfinance` y `fred` (la segunda requiere obtener una clave api, se gestiona en la pagina oficial de la Reserva Federal: https://fred.stlouisfed.org/docs/api/api_key.html). Las intrucciones para ingresar tu clave en el repositorio local se encuentran en el fichero `src/data_sources.examples.py`.
-* **Transformación**: sobre los datos extraídos se aplica tratamiento de valores inválidos, alineaciones de fechas e imputación de valores perdidos. Se calculan los retornos por divisa a partir de los retornos de los pares Forex, obteniendo el retorno del USD de forma implícita. A partir de estos retornos se obtienen las caracteristicas, aplicando la exposición por divisa para cada variable macro y de otros activos (variables *no Forex*). El cálculo de las exposiciones permite relacionar dichas *features* con cada moneda, a fin de aplicar luego el modelado de la variable objetivo `Target_rank`, la cual calcula el ranking semanal de los retornos por divisa. Se escalan las variables mediante z-score y transformaciones logarítmicas. Finalmente se aplica lag sobre aquellas variables que requieran ser desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
-* **Modelado**: aplicación de modelo regresor *RandomForest* con datos completos, prueba de validación con partición de series temporales, evaluación de resultados, exportación de datos y predicciones y módulo para la optimización de hiper-parámetros. El código permite la incorporación de otros modelos a futuro.
+## 📊 Fases
 
-Opcionalmente, el módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruido. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables random). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en la siguiente modelización.
+El flujo cuenta con tres fases principales ETL, una fase opcional de filtrado y un Notebook exploratorio de datos:
+### **Extracción**: 
+Obtención de datos a través de 2 APIs gratuitas: `yfinance` y `fred` (la segunda requiere obtener una clave api, se gestiona en la pagina oficial de la Reserva Federal: https://fred.stlouisfed.org/docs/api/api_key.html). Las intrucciones para ingresar tu clave en el repositorio local se encuentran en el fichero `src/data_sources.examples.py`.
+### **Transformación**: 
+Sobre los datos extraídos se aplica tratamiento de valores inválidos, alineaciones de fechas e imputación de valores perdidos. Se calculan los retornos por divisa a partir de los retornos de los pares Forex, obteniendo el retorno del USD de forma implícita. A partir de estos retornos se obtienen las caracteristicas, aplicando la exposición por divisa para cada variable macro y de otros activos (variables *no Forex*). El cálculo de las exposiciones permite relacionar dichas *features* con cada moneda, a fin de aplicar luego el modelado de la variable objetivo `Target_rank`, la cual calcula el ranking semanal de los retornos por divisa. 
 
-Por otro lado, el fichero `notebook_EDA.ipynb` permite realizar un análisis exploratorio de los datos transformados, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a la variable objetivo.
+Se escalan las variables mediante z-score y transformaciones logarítmicas. Finalmente se aplica lag sobre aquellas variables que requieran ser desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
+### **Modelado**: 
+Aplicación del modelo regresor base *RandomForest*, prueba de validación cruzada con partición de series temporales, evaluación de resultados, exportación de datos y predicciones y módulos auxiliares para la optimización de hiper-parámetros y curva de complejidad. El código permite la incorporación de otros modelos a futuro.
+
+### **Filtrado (opcional)**:
+El módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruido. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables random). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en la siguiente modelización.
+
+![Filtrado de variables ruidosas](./pictures/Screenshot_filtro.png)
+
+### **Análisis Exploratorio de Datos (EDA):**
+El fichero `notebook_EDA.ipynb` permite realizar un análisis exploratorio de los datos transformados, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a la variable objetivo (agrupada en 3 clases para facilitar la visualización).
+
+![Graficar violines](./pictures/Screenshot_violines.png)
 
 ---
 ## 💻 Evaluación de modelos
@@ -32,7 +46,7 @@ Por otro lado, el fichero `notebook_EDA.ipynb` permite realizar un análisis exp
 
 El modelado con Random Forest muestra un alto *bias*. A pesar de no mostrar sobreajuste y extraer señales de forma consistente, el poder predictivo es bajo, con varianza explicada promedio del 8 %. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos.
 
-### Curva de Desempeño
+### Curva de Complejidad:
 ![Curva de complejidad creciente](./pictures/curva_rf.png)
 
 * El error disminuye rápidamente desde `max_depth=1` `hasta max_depth=5`
@@ -68,7 +82,7 @@ Genera el fichero de columnas *"ruidosas"*, las cuales serán omitidas en la fas
 ```bash
 python -m src.modeling --modelo rf --evaluar
 ```
-Permite entrenar el modelo indicado (Random Forest por defecto). La inclusión del parámetro `--evaluar` habilita la evaluación del modelo, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
+Permite entrenar el modelo indicado (Random Forest por defecto). La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
 
 - Ejecución del flujo completo:
 
@@ -82,8 +96,11 @@ python main.py
 ## 📊 Dataset y Variables
 
 Se extraen de `yfinance` las series de precios semanales para los 6 pares forex base, asi como de los siguientes activos:
+
 `SPY`: etf representando el índice de acciones en Estados Unidos.
+
 `Oil`: precio futuro del petróleo.
+
 `Gold`: precio futuro del oro.
 
 Por otro lado, se extraen mediante la api fred los siguientes datos macroeconómicos con granularidad diaria:
@@ -91,11 +108,11 @@ Por otro lado, se extraen mediante la api fred los siguientes datos macroeconóm
 * `VIX index`: índice de volatilidad CBOE.
 * `St_louis_financial_stress`: índice de estrés financiero de la Reseva Federal de St. Louis (datos publicados semanalmente).
 
-Además, se extraen mediante la api Fred los rendimientos históricos de los bonos a 10 años para cada uno de los países en las divisas principales, utilizando los bonos de Alemania como referencia en el caso del Euro. A partir de estos rendimientos se calculan los spreads con dólar estadounidense para cada divisa. 
+Además, se obtienen mediante la api Fred los rendimientos históricos de los bonos a 10 años para cada uno de los países en las divisas principales, utilizando los bonos de Alemania como referencia en el caso del Euro. A partir de estos rendimientos se calculan los spreads con dólar estadounidense para cada divisa. 
 
 La principal limitación de los datos de los rendimientos de bonos es que son publicados en Fred mensualmente, con una demora de hasta 2 meses. Ya que los datos informados representan el promedio mensual a fin de mes, se imputan los valores semanales faltantes mediante una extrapolación lineal, aprovechando el hecho que las medias móviles se mueven en forma de línea. 
 
-⚠️ **Importante**: Es necesario imputar de forma manual los últimos valores conocidos para los bonos a 10 años, actualizando los valores en el diccionario `ultimos_yields`. 
+⚠️ **Importante**: Es necesario imputar de forma manual los últimos valores conocidos para los bonos a 10 años, actualizando los valores en el diccionario `ultimos_yields` del fichero `src.transform.py`. 
 
 ---
 ## 🗂️ Estructura del repo
