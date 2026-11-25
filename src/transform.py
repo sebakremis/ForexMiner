@@ -123,6 +123,11 @@ def guardar_datos_clean(
     print(f'Fichero guardado correctamente en {Path(fichero)}')
 
 
+def aplicar_clipping(
+          series:pd.Series,
+          clip_z:float=2.5)->pd.Series:
+    return series.clip(-clip_z, clip_z)
+
 # Feature Engineering
 
 def calcular_pct_diff(
@@ -182,7 +187,7 @@ def calcular_zscore(
         # calculo Mean / Std
         if exponencial:
             ventana = serie_previa.ewm(
-                span=periodo, min_periods=min_periodos, adjust=False
+                span=periodo, min_periods=min_periodos, adjust=True
             )
         else:
             ventana = serie_previa.rolling(
@@ -203,7 +208,7 @@ def calcular_zscore(
 
 def calcular_volatilidad_direccional(
         retorno:pd.Series,
-        span:int=20
+        span:int=26
 )->pd.Series:
     '''
     Calcula la volatilidad direccional de los retornos logaritmicos'''
@@ -220,13 +225,14 @@ def calcular_volatilidad_direccional(
     vol_down = np.sqrt(ewma_down_sq)
     vol_up = np.sqrt(ewma_up_sq)
 
-    ratio = vol_down / (vol_up + EPSILON)
-    return ratio
+    # Ratio logaritmico: simetrico en cero, positivo significa volatilidad positiva
+    log_ratio = np.log((vol_up + EPSILON) / (vol_down + EPSILON))
+    return log_ratio
 
 
 def calcular_asimetria(
     serie: pd.Series, 
-    periodo: int = 40, 
+    periodo: int = 52, 
     percentil: float | None = None
     ) -> pd.Series:
         """
@@ -293,19 +299,37 @@ def calcular_metricas_retornos(
     for col in retornos_simbolos:
         # Metricas sobre los retornos para el periodo largo  
           
-        # Desvio estandar
-        desvio_col = f"{col}_std"
-        nuevas_columnas[desvio_col] = df[col].rolling(window=periodo_largo, min_periods=min_periodos).std()
-        
+        # Desvio estandar: log corrige la asimetria positiva antes de estandarizar
+        desvio_largo = df[col].rolling(window=periodo_largo, min_periods=min_periodos).std()
+        log_desvio_largo = np.log(desvio_largo + EPSILON)
+        nuevas_columnas[f"{col}_std_zscore"] = calcular_zscore(
+             log_desvio_largo,
+             periodo=periodo_largo,
+             asumir_media_cero=False
+        )
+
         # Asimetria
-        nuevas_columnas[f"{col}_skew"] = calcular_asimetria(serie=df[col], periodo=periodo_largo)
+        skew = calcular_asimetria(serie=df[col], periodo=periodo_largo)
+        nuevas_columnas[f"{col}_skew_zscore"] = calcular_zscore(
+             skew,
+             periodo=periodo_largo,
+             asumir_media_cero=False # medir cambios anormales relativos al baseline historico del activo
+        )
 
         # Volatilidad direccional
-        nuevas_columnas[f"{col}_vol_dir"] = calcular_volatilidad_direccional(df[col])
+        vol_dir = calcular_volatilidad_direccional(df[col])
+        nuevas_columnas[f"{col}_vol_dir_zscore"] = calcular_zscore(
+             vol_dir,
+             periodo=periodo_largo,
+             asumir_media_cero=False
+        )
 
         # Media movil
         sma_larga = df[col].rolling(window=periodo_largo, min_periods=min_periodos).mean()
-        nuevas_columnas[f"{col}_sma{periodo_largo}_zscore"] = calcular_zscore(sma_larga, asumir_media_cero=True)
+        nuevas_columnas[f"{col}_sma{periodo_largo}_zscore"] = calcular_zscore(
+             sma_larga,
+             periodo=periodo_largo, 
+             asumir_media_cero=True)
 
         if periodo_corto:
             # Velocidad: tasa de cambio de los retornos
@@ -318,7 +342,12 @@ def calcular_metricas_retornos(
 
             # Ratio de volatilidad: ratio entre desvio corto y largo
             desvio_corto = df[col].rolling(window=periodo_corto).std()           
-            nuevas_columnas[f"{col}_vol_ratio"] = (desvio_corto + EPSILON) / (nuevas_columnas[desvio_col] + EPSILON)
+            log_vol_ratio = np.log((desvio_corto + EPSILON) / (desvio_largo + EPSILON))
+            nuevas_columnas[f"{col}_vol_ratio_zscore"] = calcular_zscore(
+                 log_vol_ratio,
+                 periodo=periodo_largo,
+                 asumir_media_cero=False
+            )
 
             # Calcular diferencia entre medias
             sma_corta = df[col].rolling(window=periodo_corto, min_periods=min_periodos).mean()
@@ -347,7 +376,7 @@ def calcular_open_gap(
 def calcular_exposiciones(
           df:pd.DataFrame,
           cols:list[str],
-          lag_return:int=0,
+          lag:int=0,
           ventana:int=26,
           min_periodos:int | None=None
 )->pd.DataFrame:
@@ -356,20 +385,29 @@ def calcular_exposiciones(
     multiplicando las series por su correlacion con el retorno de cada moneda.
     Aplica z-score a ambas series para normalizarlas.
     '''
-    # Recortar retornos de activos para controlar valores outliers extremos (Oil)
-    CLIP_Z = 4.0
     
     nuevas_columnas = {}
     for ccy in DIVISAS:
-        ccy_ret = calcular_zscore(df[f"{ccy}_Ret"], asumir_media_cero=True).shift(lag_return)
+        ccy_ret = calcular_zscore(df[f"{ccy}_Ret"], asumir_media_cero=True)
         for col in cols:
-            series = calcular_zscore(df[col], asumir_media_cero=True).clip(-CLIP_Z, CLIP_Z)
+            # Variables ya expresadas en z-score: se evita duplicar el calculo y se remueve "_zscore" del nombre
+            if col.endswith("_zscore"):
+                base_col = col.removesuffix("_zscore")
+                raw_series = df[col]
+            else:
+                base_col = col
+                # Se calculan z-scores asumiendo media cero para features que sean retornos
+                es_retorno = col.endswith(("_Ret", "Open_gap"))
+                raw_series = calcular_zscore(df[col], asumir_media_cero=es_retorno)
 
             # correlacion movil
-            rolling_corr = ccy_ret.rolling(window=ventana, min_periods=min_periodos).corr(series)
+            rolling_corr = ccy_ret.rolling(window=ventana, min_periods=min_periodos).corr(raw_series).shift(lag)
 
-            # Exposicion por divisa: producto de la correlacion y la serie
-            nuevas_columnas[f"{ccy}_{col}_zscore_exposure"] = rolling_corr * series
+            # Recortar columnas de activos para controlar valores outliers extremos
+            series_clipped = aplicar_clipping(raw_series)
+
+            # Exposicion por divisa: producto de la correlacion y la serie recortada       
+            nuevas_columnas[f"{ccy}_{base_col}_zscore_exposure"] = rolling_corr * series_clipped
 
     return pd.concat([df,pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
     
@@ -408,47 +446,82 @@ def obtener_features_precios(
         periodo_largo:int,
         periodo_corto:int
 )->pd.DataFrame:
-
     df_features = df.copy()
     columnas_originales = df_features.columns.tolist()
 
-    # Metricas sobre retornos
+    # Obtener Features
+
+    # Metricas sobre retornos de divisas
     df_features = calcular_metricas_retornos(
         df=df_features,
         simbolos = DIVISAS, 
         periodo_largo=periodo_largo,
         periodo_corto=periodo_corto
-        ) 
+        )
 
-    # Columnas de retornos por grupo
-    retornos_divisas = [f"{divisa}_Ret" for divisa in DIVISAS]
-    retornos_otros_activos = [f"{activo}_Ret" for activo in OTROS_ACTIVOS_COLS]
-
-    # Exposicion por divisa de los retornos de otros activos
-    df_features = calcular_exposiciones(df=df_features, cols=retornos_otros_activos)
-
-    # Open gap: se calcula para el indice SPY y luego su exposicion por divisa
-    df_features = calcular_open_gap(df=df_features, simbolos=["SPY"])
-    cols_open_gap = encontrar_columnas(df_features.columns.tolist(), cadena="_Open_gap")
-    df_features = calcular_exposiciones(df=df_features, cols=cols_open_gap) 
-
-    # Eliminar columnas absolutas (originales excepto retornos divisas)
+    # Metricas sobre retornos de otros activos
+    df_features = calcular_metricas_retornos(
+        df=df_features,
+        simbolos = OTROS_ACTIVOS_COLS, 
+        periodo_largo=periodo_largo,
+        periodo_corto=periodo_corto
+        )
     
-    cols_absolutas = [col for col in columnas_originales if col not in retornos_divisas]
+    # Open gap: se calcula sobre otros activos
+    df_features = calcular_open_gap(df=df_features, simbolos=OTROS_ACTIVOS_COLS)
+    cols_open_gap = encontrar_columnas(df_features.columns.tolist(), cadena="_Open_gap")     
 
+    # Eliminar columnas absolutas (originales excepto retornos)
+    retornos_cols = [f"{simbolo}_Ret" for simbolo in DIVISAS+OTROS_ACTIVOS_COLS]  
+    cols_absolutas = [col for col in columnas_originales if col not in retornos_cols]
     df_features = df_features.drop(columns=cols_absolutas)
+
+    # Exposicion por divisa de las features de otros activos
+
+    # Features conocidas al cierre de t-1
+    otros_activos_feat = []
+    for activo in OTROS_ACTIVOS_COLS:
+        cols = [
+        c for c in encontrar_columnas(df_features, cadena=f"{activo}")
+        if c not in cols_open_gap
+        ]
+        otros_activos_feat.extend(cols)
+    df_features = calcular_exposiciones(df=df_features, cols=otros_activos_feat)
+
+    # Open gap: conocido en la apertura t, se calcula la correlacion hasta t-1
+    df_features = calcular_exposiciones(
+         df=df_features,
+         cols=cols_open_gap,
+         lag=1
+    )
+    
+
+    # Se eliminan las features de otros activos sin exposiciones
+    df_features = df_features.drop(columns=otros_activos_feat+cols_open_gap)
 
     # Columnas restantes: relativas
     columnas_relativas = df_features.columns.tolist()
 
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
 
-    # Se exluyen labels y columnas open gap al ser conocidos luego de la apertura semanal
-    
+    # Se exluyen retornos y columnas open gap al ser conocidos luego de la apertura semanal
+    cols_open_gap = encontrar_columnas(df_features.columns.tolist(), cadena="_Open_gap")
     cols_exclude = set(cols_open_gap + cols_divisas)
     variables_restantes = [col for col in columnas_relativas if col not in cols_exclude]
 
-    df_features = aplicar_lag(df=df_features, columnas=variables_restantes, quitar_original=True)    
+    df_features = aplicar_lag(df=df_features, columnas=variables_restantes, quitar_original=True) 
+ 
+    '''
+    # Retornos: se calcula lag para usar como feature, manteniendo los originales
+    Se reemplaza por ranking lag1 al mostrar mejor R2
+
+    df_features = aplicar_lag(df=df_features, columnas=cols_divisas, quitar_original=False)
+    cols_divisas_lag = [f"{col}_lag1" for col in cols_divisas]
+    df_features[cols_divisas_lag] = df_features[cols_divisas_lag].apply(lambda x: calcular_zscore(
+         x,
+         periodo = periodo_largo, 
+         asumir_media_cero=False))  
+    '''  
 
     return df_features
 
@@ -618,9 +691,9 @@ def transformar_log(
 
 def transformar_yeo(
     df: pd.DataFrame,
-    columnas: list[str],
-    min_periodos: int = 100,
-    step: int = 20,
+    cols: list[str],
+    min_periodos: int = 52,
+    step: int = 26,
     reemplazar: bool = True,
     ) -> pd.DataFrame:
         """Aplica Yeo-Johnson de forma estrictamente causal (ajustando lambda hasta t-1)
@@ -629,7 +702,7 @@ def transformar_yeo(
         """
         nuevas_cols = {}
 
-        for col in columnas:
+        for col in cols:
             if col not in df.columns:
                 continue
 
@@ -653,12 +726,11 @@ def transformar_yeo(
         df_yj = pd.DataFrame(nuevas_cols, index=df.index)
 
         if reemplazar:
-            cols_existentes = [c for c in columnas if c in df.columns]
+            cols_existentes = [c for c in cols if c in df.columns]
             df_base = df.drop(columns=cols_existentes)
             return pd.concat([df_base, df_yj], axis=1)
 
         return pd.concat([df, df_yj], axis=1)
-
 
 # Post proceso: aplicar transformaciones y almacenamiento de fichero de datos clean
 
@@ -733,20 +805,15 @@ def post_procesar(
             cols_labels = df_divisas.columns.to_list()
             df_predictores = df.drop(columns=cols_labels)
             columnas_features = df_predictores.columns.tolist()
-            
-            # Transformaciones log
-            columnas_std = encontrar_columnas(columnas_features, f"_std_")
-            columnas_vol_dir = encontrar_columnas(columnas_features, f"_vol_dir")
-            
-            columnas_log = columnas_std + columnas_vol_dir
-            df_transform = transformar_log(df_predictores, cols=columnas_log)
+
+            # Se aplica clipping sobre valores extremos
+            df_predictores = df_predictores.apply(lambda x : aplicar_clipping(x))
 
             # Se aplica lag sobre labels para usar como predictores
             df_labels = aplicar_lag(df=df_labels, columnas=df_labels.columns.to_list(), quitar_original=False)
 
-
             # Se unen los dataframes para el almacenamiento
-            df_final = pd.concat([df_transform, df_labels], axis=1, sort=True)
+            df_final = pd.concat([df_predictores, df_labels], axis=1, sort=True)
 
             # Se eliminan posibles missings luego de transformar
             df_final = df_final.dropna()

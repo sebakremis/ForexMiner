@@ -480,7 +480,7 @@ def optimizar_rf(
     print(results_df.to_string(index=False))
 
 
-def graficar_curva(n_splits:int=5):
+def curva_rf(n_splits:int=5):
         '''
         Grafica la evolución del desempeño (-RMSE) del modelo al aumentar la complejidad.
         Identifica el trade-off entre Sesgo y Varianza (valores más altos / cercanos a 0 = mejor):
