@@ -308,14 +308,6 @@ def calcular_metricas_retornos(
              asumir_media_cero=False
         )
 
-        # Asimetria
-        skew = calcular_asimetria(serie=df[col], periodo=periodo_largo)
-        nuevas_columnas[f"{col}_skew_zscore"] = calcular_zscore(
-             skew,
-             periodo=periodo_largo,
-             asumir_media_cero=False # medir cambios anormales relativos al baseline historico del activo
-        )
-
         # Volatilidad direccional
         vol_dir = calcular_volatilidad_direccional(df[col])
         nuevas_columnas[f"{col}_vol_dir_zscore"] = calcular_zscore(
@@ -324,17 +316,9 @@ def calcular_metricas_retornos(
              asumir_media_cero=False
         )
 
-        # Media movil
-        sma_larga = df[col].rolling(window=periodo_largo, min_periods=min_periodos).mean()
-        nuevas_columnas[f"{col}_sma{periodo_largo}_zscore"] = calcular_zscore(
-             sma_larga,
-             periodo=periodo_largo, 
-             asumir_media_cero=True)
-
         if periodo_corto:
             # Velocidad: tasa de cambio de los retornos
             vel = df[col].diff(periodo_corto) / periodo_corto
-            nuevas_columnas[f"{col}_vel_zscore"] = calcular_zscore(vel, asumir_media_cero=True)
 
             # Aceleracion: tasa de cambio de la velocidad
             acel = vel.diff(periodo_corto) / periodo_corto
@@ -349,28 +333,7 @@ def calcular_metricas_retornos(
                  asumir_media_cero=False
             )
 
-            # Calcular diferencia entre medias
-            sma_corta = df[col].rolling(window=periodo_corto, min_periods=min_periodos).mean()
-            delta_sma = sma_corta - sma_larga
-            nuevas_columnas[f"{col}_sma{periodo_corto}_delta_sma{periodo_largo}_zscore"] = calcular_zscore(delta_sma, asumir_media_cero=True)
-            
-
     return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)          
-
-
-def calcular_open_gap(
-        df:pd.DataFrame,
-        simbolos:list[str]
-    )->pd.DataFrame:
-        nuevas_columnas = {}
-        for simbolo in simbolos:
-            columna_open = f"{simbolo}_Open"
-            columna_close = f"{simbolo}_Close"
-
-            # Open Gap: diferencia porcentual entre el cierre anterior y la apertura actual
-            nuevas_columnas[f"{simbolo}_Open_gap"] = calcular_pct_diff(df[columna_open], df[columna_close], lag_base=1)
-
-        return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)
     
 
 def calcular_exposiciones(
@@ -463,13 +426,8 @@ def obtener_features_precios(
     df_features = calcular_metricas_retornos(
         df=df_features,
         simbolos = OTROS_ACTIVOS_COLS, 
-        periodo_largo=periodo_largo,
-        periodo_corto=periodo_corto
-        )
-    
-    # Open gap: se calcula sobre otros activos
-    df_features = calcular_open_gap(df=df_features, simbolos=OTROS_ACTIVOS_COLS)
-    cols_open_gap = encontrar_columnas(df_features.columns.tolist(), cadena="_Open_gap")     
+        periodo_largo=periodo_largo
+        )    
 
     # Eliminar columnas absolutas (originales excepto retornos)
     retornos_cols = [f"{simbolo}_Ret" for simbolo in DIVISAS+OTROS_ACTIVOS_COLS]  
@@ -478,36 +436,22 @@ def obtener_features_precios(
 
     # Exposicion por divisa de las features de otros activos
 
-    # Features conocidas al cierre de t-1
     otros_activos_feat = []
     for activo in OTROS_ACTIVOS_COLS:
-        cols = [
-        c for c in encontrar_columnas(df_features, cadena=f"{activo}")
-        if c not in cols_open_gap
-        ]
+        cols = [c for c in encontrar_columnas(df_features, cadena=f"{activo}")]
         otros_activos_feat.extend(cols)
-    df_features = calcular_exposiciones(df=df_features, cols=otros_activos_feat)
-
-    # Open gap: conocido en la apertura t, se calcula la correlacion hasta t-1
-    df_features = calcular_exposiciones(
-         df=df_features,
-         cols=cols_open_gap,
-         lag=1
-    )
-    
+    df_features = calcular_exposiciones(df=df_features, cols=otros_activos_feat)  
 
     # Se eliminan las features de otros activos sin exposiciones
-    df_features = df_features.drop(columns=otros_activos_feat+cols_open_gap)
+    df_features = df_features.drop(columns=otros_activos_feat)
 
     # Columnas restantes: relativas
     columnas_relativas = df_features.columns.tolist()
 
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
 
-    # Se exluyen retornos y columnas open gap al ser conocidos luego de la apertura semanal
-    cols_open_gap = encontrar_columnas(df_features.columns.tolist(), cadena="_Open_gap")
-    cols_exclude = set(cols_open_gap + cols_divisas)
-    variables_restantes = [col for col in columnas_relativas if col not in cols_exclude]
+    # Se excluyen retornos de divisas para usar al crear el target_rank
+    variables_restantes = [col for col in columnas_relativas if col not in cols_divisas]
 
     df_features = aplicar_lag(df=df_features, columnas=variables_restantes, quitar_original=True) 
  
@@ -597,7 +541,7 @@ def obtener_features_macro(
             df_daily_lagged = pd.DataFrame(index=df_macro.index)
 
             # VIX y Real Yield: Disponibles al cierre del día / apertura t+1 -> 1 día hábil
-            cols_lag_1d = ["VIX_index", "Real_yield_10y"]
+            cols_lag_1d = ["VIX_index", "Real_yield_10y", "T10Y2Y"]
             df_daily_lagged[cols_lag_1d] = df_macro[cols_lag_1d].shift(1)
 
             # STLFSI: Se calcula al viernes T, pero la Fed lo publica el JUEVES T+1.
@@ -614,22 +558,28 @@ def obtener_features_macro(
             # Vix index: variacion porcentual mediante diferencia logaritmica
             vix_log = np.log(df_weekly["VIX_index"])
             df_weekly["VIX_pct_diff"] = vix_log.diff()
-            df_weekly[f"VIX_vel{periodo}w"] = vix_log.diff(periodo) / periodo
-            df_weekly[f"VIX_accel{periodo}w"] = df_weekly[f"VIX_vel{periodo}w"].diff(periodo) / periodo
+            vix_vel = vix_log.diff(periodo) / periodo
+            df_weekly[f"VIX_accel{periodo}w"] = vix_vel.diff(periodo) / periodo
 
             # Variables originalmente expresadas en tasas (variación absoluta delta)
 
             # Real Yield
             ry = df_weekly["Real_yield_10y"]
             df_weekly["Real_yield_delta"] = ry.diff()
-            df_weekly[f"Real_yield_vel{periodo}w"] = ry.diff(periodo) / periodo
-            df_weekly[f"Real_yield_accel{periodo}w"] = df_weekly[f"Real_yield_vel{periodo}w"].diff(periodo) / periodo
+            ry_vel = ry.diff(periodo) / periodo
+            df_weekly[f"Real_yield_accel{periodo}w"] = ry_vel.diff(periodo) / periodo
+
+            # T10Y2Y
+            t10y2y = df_weekly["T10Y2Y"]
+            df_weekly["T10Y2Y_delta"] = t10y2y.diff()
+            t10y2y_vel = t10y2y.diff(periodo) / periodo
+            df_weekly[f"T10Y2Y_accel{periodo}w"] = t10y2y_vel.diff(periodo) / periodo            
 
             # STLFSI
-            STLFSI = df_weekly["St_louis_financial_stress"]
-            df_weekly["STLFSI_delta"] = STLFSI.diff()
-            df_weekly[f"STLFSI_vel{periodo}w"] = STLFSI.diff(periodo) / periodo
-            df_weekly[f"STLFSI_accel{periodo}w"] = df_weekly[f"STLFSI_vel{periodo}w"].diff(periodo) / periodo
+            stlfsi = df_weekly["St_louis_financial_stress"]
+            df_weekly["STLFSI_delta"] = stlfsi.diff()
+            stlfsi_vel = stlfsi.diff(periodo) / periodo
+            df_weekly[f"STLFSI_accel{periodo}w"] = stlfsi_vel.diff(periodo) / periodo
 
             # Se eliminan las columnas macro originales
             df_weekly = df_weekly.drop(columns=cols_lag_1d+cols_lag_4d)
@@ -786,8 +736,9 @@ def post_procesar(
             columnas_vix = encontrar_columnas(df, cadena="VIX_")
             columnas_ry = encontrar_columnas(df, cadena="Real_yield_")
             columnas_stlfsi = encontrar_columnas(df, cadena="STLFSI_")
+            columnas_t10y2y = encontrar_columnas(df, cadena="T10Y2Y_")
 
-            columnas_macro_delta = columnas_vix+columnas_ry+columnas_stlfsi
+            columnas_macro_delta = columnas_vix+columnas_ry+columnas_stlfsi+columnas_t10y2y
             df = calcular_exposiciones(df, cols=columnas_macro_delta)
             df = df.drop(columns=columnas_macro_delta)
 

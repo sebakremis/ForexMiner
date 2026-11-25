@@ -140,10 +140,9 @@ def extraer_fred(
             raise RuntimeError("No se pudo obtener ninguna serie desde FRED.")
 
         # Outer join sobre las fechas para alinear los calendarios de negociacion
-        df = pd.concat(data_frames, axis=1)
+        df = pd.concat(data_frames, axis=1, sort=True)
         df.index = pd.to_datetime(df.index)
         df.index.name = "Date"
-        df.sort_index(inplace=True)
 
         return df
 

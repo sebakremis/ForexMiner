@@ -41,7 +41,7 @@ YFINANCE_COLS = list(YFINANCE_SERIES.values())
 # Factores financieros / mercado (diarios o semanales en origen)
 MACRO_SERIES: Dict[str, str] = {
     "DFII10": "Real_yield_10y",                 # 10-Year Real Yield (Diaria)                 
-    "DTWEXBGS": "DXY_broad_goods",              # Trade Weighted USD (Diaria)
+    "T10Y2Y": "T10Y2Y",                         # US 10Y - 2Y Term Spread
     "VIXCLS": "VIX_index",                      # CBOE Volatility Index (Diaria)
     "STLFSI4": "St_louis_financial_stress"      # Financial Stress Index (Semanal)
 }

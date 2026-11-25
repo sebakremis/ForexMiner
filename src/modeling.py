@@ -125,8 +125,8 @@ def separar_train_test(
         '''
         Divide el DataFrame en conjuntos de entrenamiento y prueba basándose en la fecha de corte.
         '''
-        df_train = df[df.index < fecha]
-        df_test = df[df.index >= fecha].copy()
+        df_train = df[df.index.get_level_values("date") < fecha]
+        df_test = df[df.index.get_level_values("date") >= fecha].copy()
 
         return df_train, df_test
     
@@ -162,10 +162,10 @@ def preprocesar_datos(
             df_clean = cargar_datos_clean()
 
             # Convertir a panel long
-            df_panel = wide_to_long_panel(df_clean).set_index('date')
+            df_panel = wide_to_long_panel(df_clean).set_index(['date', 'Currency'])
 
             # Separar datos de entrenamiento y datos live
-            ultima_fecha = df_panel.index.max()
+            ultima_fecha = df_panel.index.get_level_values("date").max()
             df_train, df_live = separar_train_test(df=df_panel, fecha=ultima_fecha)
 
             X_train, y_train, X_live, y_live = separar_predictores_y_objetivo(
@@ -180,13 +180,12 @@ def preprocesar_datos(
 
 def construir_pipe_rf(
         X_sample: pd.DataFrame,
-        cat_cols: list[str] | None = None,
+        cat_cols: list[str]=[],
         **rf_params
 )-> Pipeline:
     '''
     Construye un pipeline no entrenado de regresion RandomForest, junto con su preprocesado.
     '''
-    cat_cols = cat_cols or ['Currency']
     num_cols = [
         col for col in X_sample.select_dtypes(include=np.number).columns
         if col not in cat_cols
@@ -201,10 +200,10 @@ def construir_pipe_rf(
             'random_state': 42,
             'n_estimators': 400,
             'max_depth': 4,
-            'min_samples_leaf': 25,
-            'min_samples_split': 60,
+            'min_samples_leaf': 20,
+            'min_samples_split': 50,
             'max_samples': 0.4,
-            'max_features': 0.4,
+            'max_features': 0.45,
         } 
 
     # Sobre escribir con los parametros pasados a la funcion
@@ -439,11 +438,11 @@ def optimizar_rf(
 
     param_grid = {
         'model__n_estimators': [400],
-        'model__max_depth': [3],
-        'model__min_samples_leaf': [25],
-        'model__min_samples_split': [60], # >= 2* min_samples_leaf
-        'model__max_samples': [0.4],
-        'model__max_features': [0.4],
+        'model__max_depth': [4],
+        'model__min_samples_leaf': [20,25,30],
+        'model__min_samples_split': [50,60,70], # >= 2* min_samples_leaf
+        'model__max_samples': [0.35,0.4,0.45],
+        'model__max_features': [0.35,0.4,0.45],
     }
 
     # Configurar el GridSearchCV
@@ -561,14 +560,14 @@ def main(
     # Realizar predicciones
     y_live_pred = pipe.predict(X_live)
     resultados = pd.DataFrame({
-        'Currency': X_live['Currency'].values,
+        'Currency': X_live.index.get_level_values("Currency").values,
         'Prediction': y_live_pred
     })
     resultados = resultados.sort_values(by='Prediction', ascending=False).to_string(index=False)
 
     print(f"\nEntrenamiento del modelo {nombre_modelo} finalizado.")
     print(f"Dimensiones del dataset de entrenamiento:", X_train.shape)
-    print(f"\nPredicciones semanales para el {ultima_fecha}:")
+    print(f"\nPredicciones para la semana del {ultima_fecha}:")
     print(resultados)
 
     # Evaluar modelo
