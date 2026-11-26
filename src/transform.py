@@ -69,12 +69,13 @@ def guardar_datos_clean(
     print(f'Fichero guardado correctamente en {Path(fichero)}')
 
 
+# Feature Engineering
+
 def aplicar_clipping(
           series:pd.Series,
           clip_z:float=2.5)->pd.Series:
     return series.clip(-clip_z, clip_z)
 
-# Feature Engineering
 
 def calcular_pct_diff(
     serie_target: pd.Series,
@@ -270,15 +271,6 @@ def calcular_metricas_retornos(
             acel = vel.diff(periodo_corto) / periodo_corto
             nuevas_columnas[f"{col}_accel_zscore"] = calcular_zscore(acel, asumir_media_cero=True)
 
-            # Ratio de volatilidad: ratio entre desvio corto y largo
-            desvio_corto = df[col].rolling(window=periodo_corto).std()           
-            log_vol_ratio = np.log((desvio_corto + EPSILON) / (desvio_largo + EPSILON))
-            nuevas_columnas[f"{col}_vol_ratio_zscore"] = calcular_zscore(
-                 log_vol_ratio,
-                 periodo=periodo_largo,
-                 asumir_media_cero=False
-            )
-
     return pd.concat([df, pd.DataFrame(nuevas_columnas, index=df.index)], axis=1)          
     
 
@@ -351,7 +343,6 @@ def encontrar_columnas(
 
 def obtener_features_precios(
         df:pd.DataFrame,
-        cols_divisas:list,
         periodo_largo:int,
         periodo_corto:int
 )->pd.DataFrame:
@@ -397,7 +388,8 @@ def obtener_features_precios(
     # Se aplica lag1 sobre los predictores para evitar Lookahead Bias
 
     # Se excluyen retornos de divisas para usar al crear el target_rank
-    variables_restantes = [col for col in columnas_relativas if col not in cols_divisas]
+    ret_divisas = [f"{divisa}_Ret" for divisa in DIVISAS]
+    variables_restantes = [col for col in columnas_relativas if col not in ret_divisas]
 
     df_features = aplicar_lag(df=df_features, columnas=variables_restantes, quitar_original=True) 
  
@@ -414,63 +406,6 @@ def obtener_features_precios(
     '''  
 
     return df_features
-
-
-def trasladar_df_mensual(grupo):
-    # Creamos un bloque vacío con el mismo índice y columnas
-    res = pd.DataFrame(np.nan, index=grupo.index, columns=grupo.columns)
-    
-    # Tomamos el primer valor no nulo de cada columna
-    primeros = grupo.bfill().iloc[0]
-    
-    # Lo colocamos en la última fila del mes
-    res.iloc[-1] = primeros
-    return res
-
-
-def imputar_manual(df:pd.DataFrame)->pd.DataFrame:
-    '''
-    Imputa manualmente los ultimos yields registrados en el diccionario ultimos_yields
-    '''
-    df_out = df.copy()
-    # Filtrar solo las columnas que realmente existen en el DataFrame
-    cols_comunes = [col for col in ultimos_yields if col in df_out.columns]
-    
-    if not cols_comunes or df_out.empty:
-        return df_out
-
-    # Asignación limpia en la última fecha/fila sin crear índices espurios
-    ultima_fecha = df_out.index[-1]
-    df_out.loc[ultima_fecha, cols_comunes] = [ultimos_yields[c] for c in cols_comunes]
-
-    return df_out
-
-
-def imputar_interpolacion(
-    df: pd.DataFrame, 
-    rellenar_extremos: bool = False
-    ) -> pd.DataFrame:
-        """
-        Imputa valores NaN intermedios en un DataFrame mediante interpolación lineal.
-        
-        Parámetros:
-        - df: DataFrame de entrada.
-        - metodo: 'linear' para interpolación basada en posición/pasos iguales, 
-                o 'time'/'index' para ponderar por la distancia real entre fechas.
-        - rellenar_extremos: Si es True, aplica bfill y ffill para cubrir posibles NaNs
-                            al inicio o final de las series que la interpolación no cubre.
-        """
-        df_out = df.copy()
-        
-        # Interpolación lineal a lo largo de las columnas (filas hacia abajo)
-        df_out = df_out.interpolate(method='index', axis=0)
-        
-        # La interpolación no puede estimar NaNs antes del primer valor 
-        # ni después del último; se cubren con forward/backward fill si se solicita
-        if rellenar_extremos:
-            df_out = df_out.bfill().ffill()
-            
-        return df_out
 
 
 def obtener_features_macro(
@@ -554,25 +489,38 @@ def obtener_features_macro(
             return df_weekly_features
 
 
+# Post proceso: obtener target_rank y tratamiento de outliers
 
-# Post proceso: obtener target_rank y almacenamiento de fichero de datos clean
-
-def descomponer_retornos(df_returns_xxx_usd:pd.DataFrame)->pd.DataFrame:
+def descomponer_retornos(df:pd.DataFrame)->pd.DataFrame:
     '''
-    Convierte un DataFrame con retornos logarítmicos de N pares XXX/USD
-    en los N+1 retornos latentes individuales (incluyendo USD) bajo la
+    Reemplaza los retornos de N pares XXX/USD por los N+1 retornos 
+    latentes individuales (incluyendo USD) bajo la
     restricción de suma cero (canasta equiponderada).
     '''
-    n_foreign = df_returns_xxx_usd.shape[1]
+    cols_pares = [f"{par}_Ret" for par, _ in MAP_DIVISAS.values()]
+
+    # Validacion de columnas faltantes
+    faltantes = set(cols_pares) - set(df.columns)
+    if faltantes:
+         raise KeyError(f"Faltan columnas requeridas en el DataFrame: {faltantes}")
+
+    ret_divisas = {
+        f"{divisa}_Ret": signo * df[f"{par}_Ret"]
+        for divisa, (par, signo) in MAP_DIVISAS.items()
+    }
+
+    df_divisas = pd.DataFrame(ret_divisas, index=df.index)
+    df_restante = df.drop(columns=cols_pares)
 
     # s_USD = -1 / (N + 1) * sum(r_{k/USD})
-    usd_ret = -df_returns_xxx_usd.sum(axis=1) / (n_foreign + 1)
+    n_total = df_divisas.shape[1] + 1
+    usd_ret = -df_divisas.sum(axis=1, skipna=False) / n_total
 
     # s_k = r_{k/USD} + s_USD
-    df_currencies = df_returns_xxx_usd.add(usd_ret, axis=0)
-    df_currencies["USD_Ret"] = usd_ret
+    df_divisas_usd = df_divisas.add(usd_ret, axis=0)
+    df_divisas_usd["USD_Ret"] = usd_ret
 
-    return df_currencies
+    return pd.concat([df_restante, df_divisas_usd], axis=1, sort=False)
 
 
 def rankear_divisas(
@@ -603,7 +551,6 @@ def rankear_divisas(
 
 def post_procesar(
         df:pd.DataFrame,
-        df_divisas:pd.DataFrame
         ):
             # Obtener exposiciones por divisa para variables macro
             columnas_vix = encontrar_columnas(df, cadena="VIX_")
@@ -618,6 +565,8 @@ def post_procesar(
             # Construir variable objetivo
             
             # Se calcula un ranking cross sectional normalizado entre 0 y 1
+            ret_divisas = [f"{divisa}_Ret" for divisa in DIVISAS]
+            df_divisas = df[ret_divisas]
             df_labels = rankear_divisas(df_currencies=df_divisas, normalize=True)
 
             # Eliminar missings iniciales
@@ -626,9 +575,7 @@ def post_procesar(
             df = df.dropna()
 
             # Separar predictores
-            cols_labels = df_divisas.columns.to_list()
-            df_predictores = df.drop(columns=cols_labels)
-            columnas_features = df_predictores.columns.tolist()
+            df_predictores = df.drop(columns=ret_divisas)
 
             # Se aplica clipping sobre valores extremos
             df_predictores = df_predictores.apply(lambda x : aplicar_clipping(x))
@@ -637,7 +584,7 @@ def post_procesar(
             df_labels = aplicar_lag(df=df_labels, columnas=df_labels.columns.to_list(), quitar_original=False)
 
             # Se unen los dataframes para el almacenamiento
-            df_final = pd.concat([df_predictores, df_labels], axis=1, sort=True)
+            df_final = pd.concat([df_predictores, df_labels], axis=1, sort=False)
 
             # Se eliminan posibles missings luego de transformar
             df_final = df_final.dropna()
@@ -647,7 +594,6 @@ def post_procesar(
 
             # Se guardan los datos depurados
             guardar_datos_clean(df_final)    
-
 
 
 '''
@@ -671,42 +617,19 @@ def main():
     # Calcular retornos para todos los activos
     df_precios = calcular_retornos(precios_raw)
 
-    # Expresar retornos por divisa forex
-    dict_divisas = {
-         # Cotizaciones directas:
-         "EUR_Ret": df_precios["EURUSD_Ret"],
-         "GBP_Ret": df_precios["GBPUSD_Ret"],
-         "AUD_Ret": df_precios["AUDUSD_Ret"],
-
-         # Cotizaciones invertidas:
-         "JPY_Ret": -df_precios["USDJPY_Ret"],
-         "CAD_Ret": -df_precios["USDCAD_Ret"],
-         "CHF_Ret": -df_precios["USDCHF_Ret"]
-    }     
-
-    # Crear df de retornos por divisa
-    df_divisas = pd.DataFrame(dict_divisas, index=df_precios.index)
-
-    # Se incorpora el retorno del USD implicito
-    df_divisas = descomponer_retornos(df_divisas)
-    cols_divisas = df_divisas.columns.to_list()
-
-    # Se eliminan retornos de pares forex, reemplazandolos por retornos de divisas
-    retornos_pares = [f"{par}_Ret" for par in FOREX_COLS]
-    df_precios = df_precios.drop(columns=retornos_pares)
-    df_retornos = pd.concat([df_precios, df_divisas], axis=1, sort=True)
+    # Obtener retornos por divisa, incorporando el USD implicito
+    df_retornos = descomponer_retornos(df=df_precios)
 
     # Obtener features de precios para todos los pares y activos
     price_features = obtener_features_precios(
         df=df_retornos,
-        cols_divisas=cols_divisas,
         periodo_largo= 52,
         periodo_corto = 26
     )
 
     # Unir y post-procesar: transformaciones, crear label y almacenamiento
-    df_merged = pd.concat([price_features, macro_features], axis=1, sort=True)
-    post_procesar(df=df_merged, df_divisas=df_divisas)
+    df_merged = pd.concat([price_features, macro_features], axis=1, sort=False)
+    post_procesar(df=df_merged)
 
                   
 if __name__ == "__main__":
