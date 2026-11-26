@@ -29,7 +29,7 @@ Se calculan los retornos por divisa a partir de los retornos de los pares Forex,
 
 Se estandarizan las variables mediante z-score exponencial. Finalmente se aplica lag sobre los predictores, desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
 ### **Modelado**: 
-Permite aplicar y analizar distintos modelos predictivos de regresión. Se selecciona el modelo a utilizar ingresando con el parámetro `modelo` el nombre correspondiente:
+Permite entrenar y analizar distintos modelos predictivos de regresión. Se selecciona el modelo a utilizar ingresando con el parámetro `modelo` el nombre correspondiente:
 
 * **RandomForestRegressor**: `rf` (modelo por defecto)
 * **ExtraTreesRegressor**: `et`
