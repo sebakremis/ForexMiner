@@ -29,16 +29,13 @@ Se calculan los retornos por divisa a partir de los retornos de los pares Forex,
 
 Se estandarizan las variables mediante z-score exponencial. Finalmente se aplica lag sobre los predictores, desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
 ### **Modelado**: 
-Permite aplicar y analizar distintos modelos predictivos de regresión.
+Permite aplicar y analizar distintos modelos predictivos de regresión. Se selecciona el modelo a utilizar ingresando con el parámetro `modelo` el nombre correspondiente:
 
-Modelos basados en árboles:
-* **RandomForest**
-* **ExtraTreesRegressor**
-* **GradientBoostingRegressor**
-
-Modelos lineales:
-* **Ridge**
-* **ElasticNet**
+* **RandomForestRegressor**: `rf` (modelo por defecto)
+* **ExtraTreesRegressor**: `et`
+* **GradientBoostingRegressor**: `gbr`
+* **Ridge**: `ridge`
+* **ElasticNet**: `elasticnet`
 
 
 El módulo incluye prueba de validación cruzada con partición de series temporales y evaluación de resultados para cualquiera de los modelos.
@@ -100,7 +97,7 @@ Genera el fichero de columnas *"ruidosas"*, las cuales serán omitidas en la fas
 ```bash
 python -m src.modeling --evaluar --modelo ridge
 ```
-Permite entrenar el modelo indicado (por defecto `"rf" = RandomForest`). La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
+Permite entrenar el modelo indicado. La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
 
 - Ejecución del flujo completo:
 
