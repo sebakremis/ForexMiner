@@ -29,16 +29,28 @@ Se calculan los retornos por divisa a partir de los retornos de los pares Forex,
 
 Se estandarizan las variables mediante z-score exponencial. Finalmente se aplica lag sobre los predictores, desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
 ### **Modelado**: 
-Aplicación del modelo regresor *RandomForest*, con posibilidad de agregar distintos modelos. Se realiza una prueba de validación cruzada con partición de series temporales y evaluación de resultados.
+Permite aplicar y analizar distintos modelos predictivos de regresión.
 
-Se incluyen funciones auxiliares de ejecución independiente para la busqueda de hiper-parámetros óptimos, gráfico de curva de complejidad y explicabilidad de las predicciones con SHAP.
+Modelos basados en árboles:
+* **RandomForest**
+* **ExtraTreesRegressor**
+* **GradientBoostingRegressor**
 
-![Ejemplo de explicabilidad con SHAP](./pictures/Screenshot_shap.png)
+Modelos lineales:
+* **Ridge**
+* **ElasticNet**
+
+
+El módulo incluye prueba de validación cruzada con partición de series temporales y evaluación de resultados para cualquiera de los modelos.
+
+Además se presentan funciones auxiliares de ejecución independiente para la busqueda de hiper-parámetros óptimos, gráfico de curva de complejidad y explicabilidad de las predicciones con SHAP.
+
+![Ejemplo de explicabilidad con SHAP](./pictures/plot_shap.png)
 
 ### **Filtrado (opcional)**:
 El módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruído. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables *random*). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en la siguiente modelización.
 
-![Filtrado de variables ruidosas](./pictures/Screenshot_filtro.png)
+![Filtrado de variables ruidosas](./pictures/plot_filtro.png)
 
 ### **Análisis Exploratorio de Datos (EDA):**
 El fichero `notebook_EDA.ipynb` permite realizar un análisis exploratorio de los datos transformados, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a la variable objetivo (agrupada en 3 clases para facilitar la visualización).
@@ -86,9 +98,9 @@ Genera el fichero de columnas *"ruidosas"*, las cuales serán omitidas en la fas
 
 - Fase de modelado:
 ```bash
-python -m src.modeling --modelo rf --evaluar
+python -m src.modeling --evaluar --modelo ridge
 ```
-Permite entrenar el modelo indicado (`Random Forest` por defecto). La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
+Permite entrenar el modelo indicado (por defecto `"rf" = RandomForest`). La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
 
 - Ejecución del flujo completo:
 

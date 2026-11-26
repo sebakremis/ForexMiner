@@ -3,22 +3,40 @@ src/cat_modeling.py
 
 Entrenamiento de modelo de Clasificacion
 '''
+
+# Manejo de datos
 import pandas as pd
 import numpy as np
 import datetime as dt
 from pathlib import Path
 from typing import (
    Optional, Any,
-   Dict, List,
-   Sequence
-   )
+   Dict, Sequence
+)
 import argparse
 from datetime import datetime
-import matplotlib.pyplot as plt
 import json
+from src.config import CARPETA_DATOS, INTERVALO_DEFECTO, DIVISAS
 
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import OneHotEncoder
+# Graficos
+import os
+os.environ["QT_LOGGING_RULES"] = "qt.qpa.wayland.textinput=false"
+import matplotlib.pyplot as plt
+import shap
+
+# Modelos
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    ExtraTreesRegressor,
+    GradientBoostingRegressor,  
+)
+from sklearn.linear_model import (
+    ElasticNet,
+    Ridge
+)
+
+# Librerias comunes de sklearn
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.metrics import (
     mean_absolute_error, root_mean_squared_error, r2_score
 )
@@ -27,14 +45,6 @@ from sklearn.model_selection import (
     )
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-
-import os
-os.environ["QT_LOGGING_RULES"] = "qt.qpa.wayland.textinput=false"
-import matplotlib.pyplot as plt
-import shap
-
-from src.config import CARPETA_DATOS, INTERVALO_DEFECTO, DIVISAS
-
 
 # Funciones de pre-procesamiento
 
@@ -171,63 +181,171 @@ def preprocesar_datos(
 
 # Construccion de pipeline
 
-def construir_pipe_rf(
+# Registro de parametros por modelo: model_key -> (EstimatorClass, default_params, requires_scaling)
+MODEL_REGISTRY: dict[str, tuple[type, dict[str, Any], bool]] = {
+    "rf": (
+        RandomForestRegressor,
+        {
+            "random_state": 42,
+            "n_estimators": 400,
+            "max_depth": 4,
+            "min_samples_leaf": 15,
+            "min_samples_split": 45,
+            "max_samples": 0.4,
+            "max_features": 0.5,
+        },
+        False,
+    ),
+    "et": (
+        ExtraTreesRegressor,
+        {
+            "random_state": 42,
+            "n_estimators": 400,
+            "max_depth": 6,
+            "min_samples_leaf": 20,
+            "max_features": 0.5,
+        },
+        False,
+    ),
+    "gbr": (
+        GradientBoostingRegressor,
+        {
+            "random_state": 42,
+            "n_estimators": 200,
+            "learning_rate": 0.05,
+            "max_depth": 1,
+            "subsample": 0.8,
+        },
+        False,
+    ),
+    "ridge": (
+        Ridge,
+        {
+            "alpha": 200.0,
+            "random_state": 42,
+            "solver": "auto",
+        },
+        True,
+    ),
+    "elasticnet": (
+        ElasticNet,
+        {
+            "alpha": 0.1,
+            "l1_ratio": 0.5,
+            "random_state": 42,
+        },
+        True,
+    ),
+}
+
+
+def construir_regression_pipe(
         X_sample: pd.DataFrame,
-        cat_cols: list[str]=[],
-        **rf_params
+        model_name:str = "rf",
+        cat_cols: list[str] | None = None,
+        scale_num: bool | None = None,
+        **model_params: Any
 )-> Pipeline:
     '''
-    Construye un pipeline no entrenado de regresion RandomForest, junto con su preprocesado.
+    Construye un pipeline no entrenado de regresion, con preprocesado
+    comun y parametros especificos para cada modelo.
     '''
+    # Validacion
+    if model_name not in MODEL_REGISTRY:
+        valid = ", ".join(MODEL_REGISTRY.keys())
+        raise ValueError(f"Modelo desconocido: {model_name}. Opciones disponibles: {valid}")
+
+    # Obtener parametros y separar variables
+    estimator_cls, default_params, default_scale = MODEL_REGISTRY[model_name]
+    use_scaler = default_scale if scale_num is None else scale_num
+    cat_cols = cat_cols or []
     num_cols = [
         col for col in X_sample.select_dtypes(include=np.number).columns
         if col not in cat_cols
-    ]
+    ]   
+    num_transformer = StandardScaler() if use_scaler else "passthrough"
+
+    # Sobre-escribir parametros por defecto
+    final_params = {**default_params, **model_params}
+
+    # Preprocesado
     preprocessor = ColumnTransformer([
-        ('num', 'passthrough', num_cols),
-        ('cat', OneHotEncoder(handle_unknown='ignore'), cat_cols)
-    ])
+                        ('num', num_transformer, num_cols),
+                        ('cat', OneHotEncoder(handle_unknown='ignore'), cat_cols)
+                    ],remainder="drop",
+    )
 
-    # Parametros por defecto
-    default_params = {
-            'random_state': 42,
-            'n_estimators': 400,
-            'max_depth': 4,
-            'min_samples_leaf': 20,
-            'min_samples_split': 50,
-            'max_samples': 0.4,
-            'max_features': 0.45,
-        } 
-
-    # Sobre escribir con los parametros pasados a la funcion
-    model_params = {**default_params, **rf_params}
+    # Devolver el pipe sin entrenar
     return Pipeline([
         ('pre', preprocessor),
-        ('model', RandomForestRegressor(**model_params))
+        ('model', estimator_cls(**final_params))
     ])   
 
 
 # Funciones de evaluacion
 
+def _extract_feature_importance(
+    estimator: Any,
+    feature_names: list[str] | np.ndarray,
+) -> pd.Series | None:
+    """
+    Extrae importancia de variables de forma agnóstica al tipo de estimador:
+    - Modelos basados en árboles: `feature_importances_`
+    - Modelos lineales (Ridge, ElasticNet, Lasso): `|coef_|` (promediado si es multi-output)
+    - Wrappers MultiOutputRegressor: promedio sobre `estimators_`
+    """
+    if hasattr(estimator, "feature_importances_"):
+        raw_imp = np.asarray(estimator.feature_importances_)
+    elif hasattr(estimator, "coef_"):
+        coef = np.asarray(estimator.coef_)
+        # Si es multi-output (n_targets, n_features), promediar magnitud absoluta por feature
+        raw_imp = np.mean(np.abs(coef), axis=0) if coef.ndim > 1 else np.abs(coef)
+    elif hasattr(estimator, "estimators_"):
+        sub_imps = []
+        for sub_est in estimator.estimators_:
+            if hasattr(sub_est, "feature_importances_"):
+                sub_imps.append(np.asarray(sub_est.feature_importances_))
+            elif hasattr(sub_est, "coef_"):
+                sub_imps.append(np.abs(np.asarray(sub_est.coef_)).ravel())
+        if not sub_imps:
+            return None
+        raw_imp = np.mean(sub_imps, axis=0)
+    else:
+        return None
+
+    return pd.Series(raw_imp, index=feature_names).sort_values(ascending=False)
+
+
 def evaluar_modelo(
-        model,
+        model:Any,
         X_train: pd.DataFrame,
-        y_train: pd.DataFrame,
+        y_train: pd.DataFrame | pd.Series,
         n_splits:int = 5,
         top_n: int=10
     ) -> Dict[str, Any]:
     """
-    Evalúa un modelo regresor con validacion cruzada.
+    Evalúa un modelo regresor (árboles o lineal) con validación cruzada temporal.
     """
     feature_names = (
         X_train.columns.tolist()
         if hasattr(X_train, "columns")
         else [f"feature_{i}" for i in range(X_train.shape[1])]
     )
+    # Extraer estimador final y nombres post-preprocesamiento
+    if hasattr(model, "steps"):
+        estimator = model[-1]
+        transformed_names = model[:-1].get_feature_names_out(feature_names)
+        n_features = len(transformed_names)
+    else:
+        estimator = model
+        transformed_names = feature_names
+        n_features = X_train.shape[1]
+
     # Predicciones sobre el dataset de entrenamientos completo
     y_pred_train = model.predict(X_train)
 
-    n_samples, n_features = X_train.shape
+    # Metricas de entrenamiento
+    n_samples = X_train.shape[0]
     r2_train = r2_score(y_train, y_pred_train)
     adj_r2_train = (
         1 - (1 - r2_train) * (n_samples - 1) / (n_samples - n_features - 1)
@@ -261,17 +379,13 @@ def evaluar_modelo(
     r2_gap = r2_train - cv_r2_mean
     rmse_ratio = cv_rmse_mean / rmse_train if rmse_train > 0 else np.nan
 
-    # Importancia de variables
-    if hasattr(model, "steps"):
-        rf = model[-1]
-        transformed_names = model[:-1].get_feature_names_out(feature_names)
-    else:
-        rf = model
-        transformed_names = feature_names
+    # Importancia de variables (soporta árboles y coeficientes lineales)
+    importances = _extract_feature_importance(estimator, transformed_names)
+    imp_label = (
+        "|Coeficientes|" if hasattr(estimator, "coef_") else "Feature Importances"
+    )
 
-    importances = pd.Series(rf.feature_importances_, index=transformed_names).sort_values(ascending=False)
-
-    # Imprimir resumen y top features
+    # Imprimir resumen 
     summary = pd.DataFrame(
         {
             "Full Train": [
@@ -291,7 +405,12 @@ def evaluar_modelo(
     )
     print(summary.to_string())
     print(f"\nOverfitting Check -> Δ R² (Train - CV): {r2_gap:+.4f} | Ratio RMSE (CV/Train): {rmse_ratio:.2f}x")
-    print(f"\nTop {top_n} Features:\n{importances.head(top_n).to_string()}")
+
+    # Imprimir top features
+    if importances is not None:
+        print(f"\nTop {top_n} Features ({imp_label}):\n{importances.head(top_n).to_string()}")
+    else:
+        print(f"\nTop {top_n} Features: no disponible nativamente para {type(estimator).__name__}.")
 
     return {
         "train": {
@@ -419,24 +538,66 @@ def registrar_evaluacion_excel(
 
 # Funciones complementarias de ejecucion independiente
 
-def optimizar_rf(
+
+# Optimizar hiper-parametros
+
+# Grilla de parametros por modelo
+PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
+    "rf": {
+        "model__n_estimators": [400],
+        "model__max_depth": [4],
+        "model__min_samples_leaf": [15, 20, 25],
+        "model__min_samples_split": [45, 50, 55],  # >= 2 * min_samples_leaf
+        "model__max_samples": [0.4],
+        "model__max_features": [0.45, 0.5],
+    },
+    "et": {
+        "model__n_estimators": [400],
+        "model__max_depth": [4, 6, 8],
+        "model__min_samples_leaf": [20, 25, 30],
+        "model__min_samples_split": [50, 60, 70],
+        "model__bootstrap": [True],  # Requerido en ExtraTrees si se usa max_samples
+        "model__max_samples": [0.4, 0.5, 0.6],
+        "model__max_features": [0.4, 0.5, 0.6],
+    },
+    "gbr": {
+        "model__n_estimators": [100, 200, 300],
+        "model__learning_rate": [0.01, 0.03, 0.05],
+        "model__max_depth": [2, 3, 4],
+        "model__min_samples_leaf": [20, 30],
+        "model__subsample": [0.7, 0.85, 1.0],
+        "model__max_features": [0.4, 0.6, 1.0],
+    },
+    "ridge": {
+        "model__alpha": [100.0, 200.0, 300.0, 400.0, 500.0, 750.0, 1000.0],
+        "model__solver": ["auto", "svd", "lsqr"],
+    },
+    "elasticnet": {
+        "model__alpha": np.logspace(-3, 0, 10).tolist(),  # 0.001 a 1.0
+        "model__l1_ratio": [0.1, 0.3, 0.5, 0.7, 0.9],
+        "model__max_iter": [5000],
+    },
+}
+
+def optimizar(
+        modelo:str = "rf",
         n_splits:int=5
 ):
+    if modelo not in PARAM_GRIDS:
+        valid = ", ".join(PARAM_GRIDS.keys())
+        raise ValueError(f"No hay param_grid configurado para '{modelo}'. Opciones: {valid}")
+    
     X_train, y_train, _, _, _ = preprocesar_datos()
 
     tscv = TimeSeriesSplit(n_splits=n_splits)
 
     print("Configurando GridSearchCV")
-    modelo_base = construir_pipe_rf(X_sample=X_train)
+    modelo_base = construir_regression_pipe(
+        X_sample=X_train,
+        model_name=modelo
+        )
 
-    param_grid = {
-        'model__n_estimators': [400],
-        'model__max_depth': [4],
-        'model__min_samples_leaf': [20,25,30],
-        'model__min_samples_split': [50,60,70], # >= 2* min_samples_leaf
-        'model__max_samples': [0.35,0.4,0.45],
-        'model__max_features': [0.35,0.4,0.45],
-    }
+    param_grid = PARAM_GRIDS[modelo]
 
     # Configurar el GridSearchCV
     grid_search = GridSearchCV(
@@ -472,7 +633,51 @@ def optimizar_rf(
     print(results_df.to_string(index=False))
 
 
-def curva_rf(n_splits:int=5):
+# Curva de complejidad
+
+# Configuración de grilla por modelo
+COMPLEXITY_CONFIG: dict[str, dict] = {
+    "rf": {
+        "complexity_var": "max_depth",
+        "complexity_range": np.arange(1, 15),
+        "xlabel": "max_depth (mayor profundidad = mayor complejidad)",
+        "log_scale": False,
+        "invert_xaxis": False,
+    },
+    "et": {
+        "complexity_var": "max_depth",
+        "complexity_range": np.arange(1, 15),
+        "xlabel": "max_depth (mayor profundidad = mayor complejidad)",
+        "log_scale": False,
+        "invert_xaxis": False,
+    },
+    "gbr": {
+        "complexity_var": "n_estimators",
+        "complexity_range": np.arange(20, 420, 20),
+        "xlabel": "n_estimators (más árboles = mayor complejidad)",
+        "log_scale": False,
+        "invert_xaxis": False,
+    },
+    "ridge": {
+        "complexity_var": "alpha",
+        "complexity_range": np.logspace(2.5, 3.8, 25),
+        "xlabel": "alpha (escala log — menor alpha = mayor complejidad)",
+        "log_scale": True,
+        "invert_xaxis": True,
+    },
+    "elasticnet": {
+        "complexity_var": "alpha",
+        "complexity_range": np.logspace(-4, 1, 20),
+        "xlabel": "alpha (escala log — menor alpha = mayor complejidad)",
+        "log_scale": True,
+        "invert_xaxis": True,
+    },
+}
+
+def curva(
+        modelo:str = "rf",
+        n_splits:int=5
+):
         '''
         Grafica la evolución del desempeño (-RMSE) del modelo al aumentar la complejidad.
         Identifica el trade-off entre Sesgo y Varianza (valores más altos / cercanos a 0 = mejor):
@@ -481,21 +686,30 @@ def curva_rf(n_splits:int=5):
         - Alta varianza (overfitting): La métrica de train sigue subiendo hacia 0, mientras que la de
         test comienza a caer y se abre una brecha (generalization gap).
         '''
+        if modelo not in COMPLEXITY_CONFIG:
+            raise ValueError(f"No hay configuración de curva de complejidad para '{modelo}'.")
+        
+        cfg = COMPLEXITY_CONFIG[modelo]
+        complexity_var = cfg["complexity_var"]
+        complexity_range = cfg["complexity_range"]
+        
         X_train, y_train, _, _, _ = preprocesar_datos()
 
-        complexity_var = 'max_depth'
-        complexity_range = list(range(1, 10, 1))
         train_scores, test_scores = [], []
 
         tscv = TimeSeriesSplit(n_splits=n_splits)
 
         for value in complexity_range:
             # Modelo completo:
-            pipe_rf = construir_pipe_rf(X_sample=X_train, max_depth=value)
+            pipe = construir_regression_pipe(
+                X_sample=X_train,
+                model_name=modelo, 
+                **{complexity_var: value}
+                )
 
             # Test de validacion cruzada
             cv_results = cross_validate(
-                estimator = pipe_rf,
+                estimator = pipe,
                 X=X_train,
                 y=y_train,
                 cv=tscv,
@@ -510,28 +724,36 @@ def curva_rf(n_splits:int=5):
 
 
         plt.figure(figsize=(8, 4.5))
-        plt.plot(complexity_range, train_scores, marker='o', label="Train -RMSE (Aproximación al sesgo)")
-        plt.plot(complexity_range, test_scores, marker='s', label="Test CV -RMSE (Generalización)")
-        
-        # Invertir la dirección del eje X (para Min Samples leaf):
-        #plt.gca().invert_xaxis()
-        
-        plt.xlabel(complexity_var)
+        plt.plot(complexity_range, train_scores, marker="o", label="Train -RMSE (Aproximación al sesgo)")
+        plt.plot(complexity_range, test_scores, marker="s", label="Test CV -RMSE (Generalización)")
+
+        if cfg.get("log_scale"):
+            plt.xscale("log")
+        if cfg.get("invert_xaxis"):
+            plt.gca().invert_xaxis()
+
+        plt.xlabel(cfg["xlabel"])
         plt.ylabel("-RMSE (mas alto = menor error)")
-        plt.title(f"Curva de Complejidad ({complexity_var})")
+        plt.title(f"Curva de Complejidad modelo {modelo} ({complexity_var})")
         plt.legend()
         plt.grid(True)
         plt.show()
 
 
+# Explicar predicciones con SHAP
+
 def explicar(
         moneda:str="USD",
+        modelo:str = "rf",
         max_display:int=10,
         target_class: int = 1 # Relevante solo si el modelo fuese un clasificador
 ):
     # Pre-procesar datos y entrenar modelo
     X_train, y_train, X_live, _, ultima_fecha = preprocesar_datos()
-    pipe = construir_pipe_rf(X_sample=X_train)
+    pipe = construir_regression_pipe(
+        X_sample=X_train,
+        model_name=modelo
+    )
     pipe.fit(X_train, y_train)
 
     # Extraer los componentes del pipeline
@@ -539,6 +761,7 @@ def explicar(
     model = pipe.named_steps['model']
 
     # Transformar los datos test usando el preprocesador
+    X_train_trans = preprocessor.transform(X_train)
     X_test_transformed = preprocessor.transform(X_live)
     feature_names = preprocessor.get_feature_names_out()
 
@@ -552,7 +775,17 @@ def explicar(
     X_ticker_eval = X_test_shap.loc[mask].iloc[[-1]]
 
     # Inicializar el explicador y calcular los valores SHAP
-    explainer = shap.TreeExplainer(model)
+
+    # Usar todo el background sin submuestrear
+    masker = shap.maskers.Independent(
+        data=X_train_trans,
+        max_samples=len(X_train_trans),
+    )
+
+    explainer = shap.Explainer(
+        model, 
+        masker=masker, 
+        feature_names=feature_names)
     shap_values = explainer(X_ticker_eval)
 
     # Manejar salida 3D (clasificación) vs 2D (regresión)
@@ -561,9 +794,9 @@ def explicar(
     # Crear la figura y visualizar:
     shap.plots.waterfall(explanation, max_display=max_display, show=False)
     fig = plt.gcf()
-    fig.suptitle(f"Explicación de la moneda {moneda} (Fecha: {ultima_fecha}):")
+    fig.suptitle(f"Explicación del modelo {modelo} para la moneda {moneda} (Fecha: {ultima_fecha}):")
     fig.set_size_inches(11, 6)
-    fig.subplots_adjust(left=0.35)  # Reserva el 35% izquierdo para los nombres
+    fig.subplots_adjust(left=0.40)  # Reserva el 35% izquierdo para los nombres
     plt.show()
 
 
@@ -572,26 +805,25 @@ Bloque principal
 
 Ejecucion desde el terminal:
 
-# Obtener predicciones sin evaluar el modelo:
+# Obtener predicciones sin evaluar el modelo (RandomForest por defecto):
 python -m src.modeling
 
 # Obtener predicciones y realizar evaluacion:
 python -m src.modeling --evaluar
 '''
 def main(
-        nombre_modelo:str | None = None,
-        evaluar:bool=False
+        nombre_modelo:str,
+        evaluar:bool=False,             
 ):
     # Preprocesar datos clean, separando variables y datos "live"
     X_train, y_train, X_live, _, ultima_fecha = preprocesar_datos()
 
     # Inicializar modelo y entrenar
-    if nombre_modelo is None:
-        nombre_modelo = "rf"
-
-    if nombre_modelo == "rf":
-        pipe = construir_pipe_rf(X_sample=X_train)
-        pipe.fit(X_train, y_train)
+    pipe = construir_regression_pipe(
+        X_sample=X_train,
+        model_name=nombre_modelo
+    )
+    pipe.fit(X_train, y_train)
 
     # Realizar predicciones
     y_live_pred = pipe.predict(X_live)
@@ -631,7 +863,9 @@ def entrypoint_modeling(argv: Sequence[str] | None = None):
     parser.add_argument(
          "--modelo",
          type=str,
-         help="Nombre del modelo"
+         default="rf",
+         choices=list(MODEL_REGISTRY.keys()),
+         help="Modelo a entrenar (por defecto: rf)"
     )
     parser.add_argument(
         "--evaluar",
