@@ -5,7 +5,7 @@
 
 Este proyecto implementa un pipeline ETL (Extracción, Transformación y Carga) para construir un dataset financiero destinado al modelado predictivo, rankeando los retornos semanales de las principales divisas Forex:
 * `USD`: el dólar de Estados Unidos.
-* `EUR`: el Euro.
+* `EUR`: el euro.
 * `AUD`: dólar australiano.
 * `GBP`: libra británica.
 * `JPY`: el yen japonés.
@@ -82,7 +82,7 @@ Genera el fichero de columnas *"ruidosas"*, las cuales serán omitidas en la fas
 ```bash
 python -m src.modeling --modelo rf --evaluar
 ```
-Permite entrenar el modelo indicado (Random Forest por defecto). La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
+Permite entrenar el modelo indicado (`Random Forest` por defecto). La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
 
 - Ejecución del flujo completo:
 
@@ -104,22 +104,18 @@ Se extraen de `yfinance` las series de precios semanales para los 6 pares forex 
 `Gold`: precio futuro del oro.
 
 Por otro lado, se extraen mediante la api fred los siguientes datos macroeconómicos con granularidad diaria:
-* `Real_yield_10y`: rendimiento real de los bonos del tesoro a 10 años.
+* `Real_yield_10y`: rendimiento real de los bonos del tesoro de USA a 10 años.
+* `T10Y2Y`: spread entre los rendimientos de los bonos USA de 10 y 2 años.
 * `VIX index`: índice de volatilidad CBOE.
 * `St_louis_financial_stress`: índice de estrés financiero de la Reseva Federal de St. Louis (datos publicados semanalmente).
 
-Además, se obtienen mediante la api Fred los rendimientos históricos de los bonos a 10 años para cada uno de los países en las divisas principales, utilizando los bonos de Alemania como referencia en el caso del Euro. A partir de estos rendimientos se calculan los spreads con dólar estadounidense para cada divisa. 
-
-La principal limitación de los datos de los rendimientos de bonos es que son publicados en Fred mensualmente, con una demora de hasta 2 meses. Ya que los datos informados representan el promedio mensual a fin de mes, se imputan los valores semanales faltantes mediante una extrapolación lineal, aprovechando el hecho que las medias móviles se mueven en forma de línea. 
-
-⚠️ **Importante**: Es necesario imputar de forma manual los últimos valores conocidos para los bonos a 10 años, actualizando los valores en el diccionario `ultimos_yields` del fichero `src.transform.py`. 
 
 ---
 ## 🗂️ Estructura del repo
 
 ```text
 FOREXMINER/
-├── data/                            # Almacenamiento local de datos
+├── data/                            # Ubicación por defecto de los datos
 │   ├── clean_data/                  # Almacena los datos depurados
 │   ├── evaluacion_modelos/          # Almacena los resultados obtenidos en el modelado
 │   ├── raw_data/                    # Sub-directorio para almacenar los datos crudos

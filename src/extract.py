@@ -11,7 +11,7 @@ from typing import Optional, Dict
 
 from src.config import (
     CARPETA_DATOS, FECHA_INICIO_DEFECTO, INTERVALO_DEFECTO,
-    YFINANCE_SERIES, FRED_SERIES, FOREX_COLS
+    YFINANCE_SERIES, MACRO_SERIES, FOREX_COLS
 )
 from src.data_sources import fred_api_key
 
@@ -115,7 +115,7 @@ def extraer_fred(
             DataFrame con DatetimeIndex y cada serie en una columna, ordenado cronologicamente.
         """
         if series_map is None:
-            series_map = FRED_SERIES
+            series_map = MACRO_SERIES
 
         fred = client or get_fred_client()
         data_frames = []

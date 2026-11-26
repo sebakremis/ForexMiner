@@ -77,13 +77,6 @@ def wide_to_long_panel(
          if col.startswith("EUR_") and col [4:] not in excluded_suffixes
     ]
 
-    # Extraer sufijos de yield spreads desde "EURUSD_"
-    spread_suffixes = [
-         col[7:] # len("EURUSD_") ==7
-         for col in df_wide.columns
-         if col.startswith("EURUSD_") and "Yield_spread" in col
-    ]
-
     panel_frames = []
 
     for ccy in currencies:
@@ -96,11 +89,6 @@ def wide_to_long_panel(
                    for suf in feature_suffixes
               }
          }
-
-        # Yield spreads alineados con MAP_DIVISAS (0.0 para USD)
-        pair_name, sign = MAP_DIVISAS.get(ccy, (None, 0.0))
-        for suf in spread_suffixes:
-            data[suf] = sign * df_wide[f"{pair_name}_{suf}"] if pair_name else 0.0
 
 
         panel_frames.append(pd.DataFrame(data, index=df_wide.index))

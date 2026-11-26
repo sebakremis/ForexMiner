@@ -45,23 +45,10 @@ MACRO_SERIES: Dict[str, str] = {
     "VIXCLS": "VIX_index",                      # CBOE Volatility Index (Diaria)
     "STLFSI4": "St_louis_financial_stress"      # Financial Stress Index (Semanal)
 }
-BOND_YIELDS: Dict[str, str] = {
-    "IRLTLT01USM156N": "USD_yield_avg",
-    "IRLTLT01JPM156N": "JPY_yield_avg",
-    "IRLTLT01DEM156N": "EUR_yield_avg",
-    "IRLTLT01GBM156N": "GBP_yield_avg",
-    "IRLTLT01CHM156N": "CHF_yield_avg",
-    "IRLTLT01CAM156N": "CAD_yield_avg",
-    "IRLTLT01AUM156N": "AUD_yield_avg"
-}
-
-# Diccionario de precios consolidado
-FRED_SERIES: Dict[str, str] = {**MACRO_SERIES, **BOND_YIELDS}
 
 # Listas automaticas:
 MACRO_COLS = list(MACRO_SERIES.values())
-BOND_COLS = list(BOND_YIELDS.values())
-FRED_COLS = list(FRED_SERIES.values())
+
 
 # Mapeo de cada divisa extranjera a su par contra USD y su signo direccional
 # (+1 si el par es CCY/USD, -1 si el par es USD/CCY para que positivo = mayor tasa en CCY)

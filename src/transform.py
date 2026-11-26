@@ -11,25 +11,12 @@ from typing import (
     List, Dict, Optional
     )
 
-from scipy.stats import yeojohnson, yeojohnson_normmax
-
 from src.config import (
     CARPETA_DATOS, FOREX_COLS, DIVISAS,
-    OTROS_ACTIVOS_COLS, BOND_COLS
+    OTROS_ACTIVOS_COLS, MAP_DIVISAS
     )
 
 EPSILON = 1e-8
-
-ultimos_yields: Dict[str, float] = {
-    "USD_yield_avg": 4.94,
-    "JPY_yield_avg": 2.675,
-    "EUR_yield_avg": 3.253,
-    "GBP_yield_avg": 5.154,
-    "CHF_yield_avg": 0.436,
-    "CAD_yield_avg": 3.645,
-    "AUD_yield_avg": 4.997
-}
-
 
 # Manejo de datos
 
@@ -58,26 +45,7 @@ def preprocesar_precios()->pd.DataFrame:
     return df_precios
 
 
-def calcular_yield_spreads(df:pd.DataFrame):
-    '''
-    Calcula la diferencia entre las tasas de la moneda base y de cotizacion.
-    Devuelve la variable escalada por el z-score.
-    '''
-    df_out = df.copy()
-    columnas_originales = df_out.columns.tolist()
-
-    for pair in FOREX_COLS:
-        base_currency = pair[:3]
-        quote_currency = pair[3:6]
-
-        serie_yield_spread = df_out[f"{base_currency}_yield_avg"] - df_out[f"{quote_currency}_yield_avg"]
-        df_out[f"{pair}_Yield_spread_zscore"] = calcular_zscore(serie_yield_spread, usar_mad=False, exponencial=True, asumir_media_cero=False)
-
-    df_out = df_out.drop(columns=columnas_originales)
-    return df_out
-
-
-def preprocesar_macro()->tuple[pd.DataFrame, pd.DataFrame]:
+def preprocesar_macro()->pd.DataFrame:
     # Cargar datos diarios
     df_macro = cargar_datos_raw(nombre_fichero="datos_macro_daily")
 
@@ -86,29 +54,7 @@ def preprocesar_macro()->tuple[pd.DataFrame, pd.DataFrame]:
     df_macro = df_macro.sort_index()
     df_macro = df_macro.ffill()
 
-    # Separar columnas de rendimientos de bonos
-    df_bonds = df_macro[BOND_COLS]
-    df_macro = df_macro.drop(columns=BOND_COLS)
-
-    # Agrupa por año y mes natural y aplica la recolocación en el último registro disponible
-    df_bonds = df_bonds.groupby(
-        [df_bonds.index.year, df_bonds.index.month], group_keys=False
-    ).apply(trasladar_df_mensual)
-
-    # Resampleo semanal, trasladando el ultimo valor al lunes de cada semana
-    df_bonds_weekly = df_bonds.resample("W-MON", label="left", closed="left").last()
-    df_bonds_weekly.index.name = "Date"
-
-    # Se imputan manualmente los ultimos yields
-    df_bonds_weekly = imputar_manual(df_bonds_weekly)
-
-    # Se imputan los huecos por interpolacion lineal
-    df_bonds_weekly = imputar_interpolacion(df_bonds_weekly)
-
-    # Se calculan los spread de tasas para cada par forex
-    df_bonds_weekly = calcular_yield_spreads(df_bonds_weekly)
-
-    return df_bonds_weekly, df_macro
+    return df_macro
 
 
 def guardar_datos_clean(
@@ -528,11 +474,9 @@ def imputar_interpolacion(
 
 
 def obtener_features_macro(
-        df_b:pd.DataFrame,
         df_m:pd.DataFrame,
         periodo:int=26
         ) -> pd.DataFrame:
-            df_bonds_weekly = df_b.copy()
             df_macro = df_m.copy()
             # Se aplica forward fill para cubrir huecos en datos (necesario para datos STLFSI semanales)
             df_macro = df_macro.ffill()
@@ -584,105 +528,34 @@ def obtener_features_macro(
             # Se eliminan las columnas macro originales
             df_weekly = df_weekly.drop(columns=cols_lag_1d+cols_lag_4d)
 
-            # Unir con rendimientos de bonos
-            df_merged = pd.concat([df_weekly, df_bonds_weekly], axis=1) 
 
-            df_merged = df_merged.copy().sort_index()
+            df_weekly = df_weekly.copy().sort_index()
 
             # Asegurar que la ultima semana se encuentre en el dataframe
-            tz = getattr(df_merged.index, "tz", None)
+            tz = getattr(df_weekly.index, "tz", None)
             hoy = pd.Timestamp.now(tz=tz).normalize()
             lunes_actual = hoy - pd.Timedelta(days=hoy.weekday())
 
-            if lunes_actual not in df_merged.index:
-                ultima_fecha = df_merged.index[-1]
+            if lunes_actual not in df_weekly.index:
+                ultima_fecha = df_weekly.index[-1]
                 if (lunes_actual - ultima_fecha).days > 7:
                     raise ValueError(
                         f"Gap detected: last available week is {ultima_fecha}, expected"
                         f" {lunes_actual - pd.Timedelta(days=7)}"
                 )
 
-            df_merged.loc[lunes_actual] = np.nan
-
-            # Asegurar ordenamiento antes de aplicar el lag
-            df_merged = df_merged.sort_index()
+            df_weekly.loc[lunes_actual] = np.nan
 
             # Aplicar lag a todas las variables
             df_weekly_features = aplicar_lag(
-                df=df_merged, columnas=df_merged.columns.to_list(), quitar_original=True
+                df=df_weekly, columnas=df_weekly.columns.to_list(), quitar_original=True
             )             
 
             return df_weekly_features
 
 
-# Transformaciones
 
-def transformar_log(
-    df: pd.DataFrame, cols: list, calculation_1p: bool = False
-    ) -> pd.DataFrame:
-        """
-        Aplica la transformación logarítmica a las columnas especificadas del DataFrame.
-        Se crea una nueva columna con el sufijo '_log' o '_log1p' y se elimina la columna original.
-        """
-        if not cols:
-            return df.copy()
-
-        funcion_log = np.log1p if calculation_1p else np.log
-        sufijo = "_log1p" if calculation_1p else "_log"
-
-        # 1. Aplicar la transformación de forma vectorizada a todas las columnas a la vez
-        df_log = funcion_log(df[cols]).add_suffix(sufijo)
-
-        # 2. Eliminar las columnas originales en una sola operación y concatenar las nuevas
-        df_out = pd.concat([df.drop(columns=cols), df_log], axis=1)
-
-        return df_out
-
-
-def transformar_yeo(
-    df: pd.DataFrame,
-    cols: list[str],
-    min_periodos: int = 52,
-    step: int = 26,
-    reemplazar: bool = True,
-    ) -> pd.DataFrame:
-        """Aplica Yeo-Johnson de forma estrictamente causal (ajustando lambda hasta t-1)
-
-        sobre las columnas indicadas y les agrega el sufijo '_yj'.
-        """
-        nuevas_cols = {}
-
-        for col in cols:
-            if col not in df.columns:
-                continue
-
-            vals = df[col].to_numpy(dtype=float)
-            out = np.full(len(vals), np.nan)
-            lmbda = None
-
-            for i in range(min_periodos, len(vals)):
-                # Re-estimar lambda cada `step` velas usando datos estrictamente hasta i-1
-                if lmbda is None or (i - min_periodos) % step == 0:
-                    hist = vals[:i]
-                    hist = hist[~np.isnan(hist)]
-                    if len(hist) >= min_periodos:
-                        lmbda = yeojohnson_normmax(hist)
-
-                if lmbda is not None and not np.isnan(vals[i]):
-                    out[i] = yeojohnson(vals[i], lmbda)
-
-            nuevas_cols[f"{col}_yj"] = out
-
-        df_yj = pd.DataFrame(nuevas_cols, index=df.index)
-
-        if reemplazar:
-            cols_existentes = [c for c in cols if c in df.columns]
-            df_base = df.drop(columns=cols_existentes)
-            return pd.concat([df_base, df_yj], axis=1)
-
-        return pd.concat([df, df_yj], axis=1)
-
-# Post proceso: aplicar transformaciones y almacenamiento de fichero de datos clean
+# Post proceso: obtener target_rank y almacenamiento de fichero de datos clean
 
 def descomponer_retornos(df_returns_xxx_usd:pd.DataFrame)->pd.DataFrame:
     '''
@@ -785,11 +658,10 @@ python -m src.transform
 '''
 def main():    
     # Cargar ficheros datos macro y pre-procesar
-    bonds_raw, macro_raw = preprocesar_macro()
+    macro_raw = preprocesar_macro()
 
     # Obtener features macro
     macro_features = obtener_features_macro(
-            df_b=bonds_raw, 
             df_m=macro_raw,
             periodo=26
             )
