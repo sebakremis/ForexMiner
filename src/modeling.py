@@ -28,7 +28,12 @@ from sklearn.model_selection import (
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
-from src.config import CARPETA_DATOS, INTERVALO_DEFECTO, MAP_DIVISAS, DIVISAS
+import os
+os.environ["QT_LOGGING_RULES"] = "qt.qpa.wayland.textinput=false"
+import matplotlib.pyplot as plt
+import shap
+
+from src.config import CARPETA_DATOS, INTERVALO_DEFECTO, DIVISAS
 
 
 # Funciones de pre-procesamiento
@@ -412,7 +417,7 @@ def registrar_evaluacion_excel(
     print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
 
 
-# Funciones complementarias de evaluacion
+# Funciones complementarias de ejecucion independiente
 
 def optimizar_rf(
         n_splits:int=5
@@ -517,6 +522,49 @@ def curva_rf(n_splits:int=5):
         plt.legend()
         plt.grid(True)
         plt.show()
+
+
+def explicar(
+        moneda:str="USD",
+        max_display:int=10,
+        target_class: int = 1 # Relevante solo si el modelo fuese un clasificador
+):
+    # Pre-procesar datos y entrenar modelo
+    X_train, y_train, X_live, _, ultima_fecha = preprocesar_datos()
+    pipe = construir_pipe_rf(X_sample=X_train)
+    pipe.fit(X_train, y_train)
+
+    # Extraer los componentes del pipeline
+    preprocessor = pipe.named_steps['pre']
+    model = pipe.named_steps['model']
+
+    # Transformar los datos test usando el preprocesador
+    X_test_transformed = preprocessor.transform(X_live)
+    feature_names = preprocessor.get_feature_names_out()
+
+    # Crear dataframe con los datos transformados para SHAP
+    X_test_shap = pd.DataFrame(X_test_transformed, columns=feature_names, index=X_live.index)
+
+    # Obtener el indice de la moneda y extraer su fila
+    mask = X_test_shap.index.get_level_values("Currency") == moneda
+    if not mask.any():
+        raise ValueError(f"La moneda '{moneda}' no se encuentra en X_live.")
+    X_ticker_eval = X_test_shap.loc[mask].iloc[[-1]]
+
+    # Inicializar el explicador y calcular los valores SHAP
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer(X_ticker_eval)
+
+    # Manejar salida 3D (clasificación) vs 2D (regresión)
+    explanation = shap_values[0, :, target_class] if shap_values.values.ndim == 3 else shap_values[0]
+
+    # Crear la figura y visualizar:
+    shap.plots.waterfall(explanation, max_display=max_display, show=False)
+    fig = plt.gcf()
+    fig.suptitle(f"Explicación de la moneda {moneda} (Fecha: {ultima_fecha}):")
+    fig.set_size_inches(11, 6)
+    fig.subplots_adjust(left=0.35)  # Reserva el 35% izquierdo para los nombres
+    plt.show()
 
 
 '''

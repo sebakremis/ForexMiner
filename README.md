@@ -1,6 +1,6 @@
 # 📊 ForexMiner
 
-![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
+![Python](https://img.shields.io/badge/python-3.13%2B-blue.svg)
 ![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-Pipeline-green)
 
 Este proyecto implementa un pipeline ETL (Extracción, Transformación y Carga) para construir un dataset financiero destinado al modelado predictivo, rankeando los retornos semanales de las principales divisas Forex:
@@ -23,11 +23,17 @@ El flujo cuenta con tres fases principales ETL, una fase opcional de filtrado y 
 ### **Extracción**: 
 Obtención de datos a través de 2 APIs gratuitas: `yfinance` y `fred` (la segunda requiere obtener una clave api, se gestiona en la página oficial de la Reserva Federal: https://fred.stlouisfed.org/docs/api/api_key.html). Las intrucciones para ingresar tu clave en el repositorio local se encuentran en el fichero `src/data_sources.examples.py`.
 ### **Transformación**: 
-Sobre los datos extraídos se aplica tratamiento de valores inválidos, alineaciones de fechas e imputación de valores perdidos. Se calculan los retornos por divisa a partir de los retornos de los pares Forex, obteniendo el retorno del USD de forma implícita. A partir de estos retornos se obtienen las caracteristicas, aplicando la exposición por divisa para cada variable macro y de otros activos (variables *no Forex*). El cálculo de las exposiciones permite relacionar dichas *features* con cada moneda, a fin de aplicar luego el modelado de la variable objetivo `Target_rank`, la cual calcula el ranking semanal de los retornos por divisa. 
+Sobre los datos crudos se aplica tratamiento de valores inválidos, alineaciones de fechas e imputación de valores perdidos. 
 
-Se escalan las variables mediante z-score y transformaciones logarítmicas. Finalmente se aplica lag sobre aquellas variables que requieran ser desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
+Se calculan los retornos por divisa a partir de los retornos de los pares Forex, obteniendo el retorno del USD de forma implícita. A partir de estos retornos se obtienen las caracteristicas, aplicando la exposición por divisa para cada variable macro y de otros activos (variables *no Forex*). El cálculo de las exposiciones permite relacionar dichas *features* con cada moneda, a fin de aplicar luego el modelado de la variable objetivo `Target_rank`, la cual calcula el ranking semanal de los retornos por divisa. 
+
+Se estandarizan las variables mediante z-score exponencial. Finalmente se aplica lag sobre los predictores, desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
 ### **Modelado**: 
-Aplicación del modelo regresor base *RandomForest*, prueba de validación cruzada con partición de series temporales, evaluación de resultados, exportación de datos y predicciones y módulos auxiliares para la optimización de hiper-parámetros y curva de complejidad. El código permite la incorporación de otros modelos a futuro.
+Aplicación del modelo regresor *RandomForest*, con posibilidad de agregar distintos modelos. Se realiza una prueba de validación cruzada con partición de series temporales y evaluación de resultados.
+
+Se incluyen funciones auxiliares de ejecución independiente para la busqueda de hiper-parámetros óptimos, gráfico de curva de complejidad y explicabilidad de las predicciones con SHAP.
+
+![Ejemplo de explicabilidad con SHAP](./pictures/Screenshot_shap.png)
 
 ### **Filtrado (opcional)**:
 El módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruído. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables *random*). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en la siguiente modelización.
@@ -103,7 +109,7 @@ Se extraen de `yfinance` las series de precios semanales para los 6 pares forex 
 
 `Gold`: precio futuro del oro.
 
-Por otro lado, se extraen mediante la api fred los siguientes datos macroeconómicos con granularidad diaria:
+Por otro lado, se extraen mediante la api Fred los siguientes datos macroeconómicos con granularidad diaria:
 * `Real_yield_10y`: rendimiento real de los bonos del tesoro de USA a 10 años.
 * `T10Y2Y`: spread entre los rendimientos de los bonos USA de 10 y 2 años.
 * `VIX index`: índice de volatilidad CBOE.
