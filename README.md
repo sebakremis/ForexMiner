@@ -58,8 +58,9 @@ El fichero `notebook_EDA.ipynb` permite realizar un análisis exploratorio de lo
 ## 💻 Evaluación de modelos
 
 ### *RandomForestRegressor*
+![Evaluacion modelo rf](./pictures/Screenshot_eval_rf.png)
 
-El modelado con *Random Forest* muestra un alto *bias*. A pesar de no mostrar sobreajuste y extraer señales de forma consistente, el poder predictivo es bajo, con varianza explicada promedio de apenas el 8 %. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos.
+El modelado con *Random Forest* muestra un alto *bias*. A pesar de no mostrar sobreajuste y extraer señales de forma consistente, el poder predictivo es bajo, con varianza explicada promedio de apenas el 9 %. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos.
 
 ### Curva de Complejidad:
 ![Curva de complejidad creciente](./pictures/curva_rf.png)
@@ -67,6 +68,18 @@ El modelado con *Random Forest* muestra un alto *bias*. A pesar de no mostrar so
 * El error disminuye rápidamente desde `max_depth=1` `hasta max_depth=5`.
 * A partir de `max_depth=5`, la curva de *test* se aplana. El ajuste en *train* sigue mejorando, aumentando la brecha. Casi toda la ganancia en entrenamiento en este tramo corresponde a memorización de patrones no generalizables.
 * El punto óptimo se encuentra con una profundidad máxima entre 4 y 5, donde la brecha aún es baja. Aplicando además el Principio de Parsimonia, es preferible el modelo más simple, con `max_depth=4`, minimizando la memorización de interacciones espurias de variables.
+
+### *Ridge*
+![Evaluacion modelo ridge](./pictures/Screenshot_eval_ridge.png)
+
+Este modelo también muestra *underfitting*, con capacidad predictiva limitada aunque superior al *RandomForest*, con una varianza explicada en *test* por encima del 14%. 
+
+### Curva de Complejidad:
+![Curva de complejidad creciente](./pictures/curva_ridge.png)
+
+* La brecha entre entrenamiento y validación cruzada es mínima, mostrando una capacidad de generalización elevada y estable.
+* Los errores tanto en entrenamiento como en test disminuyen rápidamente al reducir la regularización hasta `alpha = 100`.
+* Se alcanza un pico en `alpha=10`, y a partir de este punto la curva de entrenamiento se aplana, mientras que el error en test se incrementa ensanchando la brecha. Este punto resulta óptimo, logrando con una regularización L2 moderada reducir la varianza sin sacrificar *bias*.
 
 ---
 ## 💻 Ejecución

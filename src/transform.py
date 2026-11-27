@@ -96,8 +96,7 @@ def calcular_zscore(
     periodo: int = 26,
     min_periodos: int | None = None,
     asumir_media_cero: bool = False,
-    exponencial: bool = True,
-    usar_mad: bool = False,
+    exponencial: bool = True
 ) -> pd.Series:
     """Normaliza la vela actual (t) utilizando parámetros históricos hasta (t-1)."""
     if min_periodos is None:
@@ -105,49 +104,24 @@ def calcular_zscore(
 
     # Desplazamiento estricto para evitar lookahead bias
     serie_previa = serie.shift(1)
-
-    if usar_mad:
-        # MAD requiere ventana rolling (pandas no soporta ewm.median() nativamente)
-        if asumir_media_cero:
-            centro = 0.0
-            mad = (
-                serie_previa.abs()
-                .rolling(window=periodo, min_periods=min_periodos)
-                .median()
-            )
-        else:
-            centro = serie_previa.rolling(
-                window=periodo, min_periods=min_periodos
-            ).median()
-            # Nota: calcula la desviación respecto a la mediana de cada punto histórico
-            mad = (
-                (serie_previa - centro)
-                .abs()
-                .rolling(window=periodo, min_periods=min_periodos)
-                .median()
-            )
-
-        escala = 1.4826 * mad
-        zscore = (serie - centro) / (escala + EPSILON)
-
+   
+    # calculo Mean / Std
+    if exponencial:
+        ventana = serie_previa.ewm(
+            span=periodo, min_periods=min_periodos, adjust=True
+        )
     else:
-        # calculo Mean / Std
-        if exponencial:
-            ventana = serie_previa.ewm(
-                span=periodo, min_periods=min_periodos, adjust=True
-            )
-        else:
-            ventana = serie_previa.rolling(
-                window=periodo, min_periods=min_periodos
-            )
+        ventana = serie_previa.rolling(
+            window=periodo, min_periods=min_periodos
+        )
 
-        desvio = ventana.std()
+    desvio = ventana.std()
 
-        if asumir_media_cero:
-            zscore = serie / (desvio + EPSILON)
-        else:
-            promedio = ventana.mean()
-            zscore = (serie - promedio) / (desvio + EPSILON)
+    if asumir_media_cero:
+        zscore = serie / (desvio + EPSILON)
+    else:
+        promedio = ventana.mean()
+        zscore = (serie - promedio) / (desvio + EPSILON)
 
     zscore.name = f"{serie.name}_zscore" if serie.name else "zscore"
     return zscore

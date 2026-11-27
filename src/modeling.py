@@ -218,14 +218,18 @@ MODEL_REGISTRY: dict[str, tuple[type, dict[str, Any], bool]] = {
         },
         False,
     ),
+    #Modelos lineales: requieren escalado, pero las features ya fueron estandarizadas
+    #mediante los z-score de ventanas moviles, evitando el Lookahead Bias que introduciria
+    #el uso de StandardScaler en series temporales. Por esto los seteo en "False", aunque 
+    #dejo la posibilidad de usarlo.
     "ridge": (
         Ridge,
         {
-            "alpha": 200.0,
+            "alpha": 10.0,
             "random_state": 42,
             "solver": "auto",
         },
-        True,
+        False,
     ),
     "elasticnet": (
         ElasticNet,
@@ -234,7 +238,7 @@ MODEL_REGISTRY: dict[str, tuple[type, dict[str, Any], bool]] = {
             "l1_ratio": 0.5,
             "random_state": 42,
         },
-        True,
+        False,
     ),
 }
 
@@ -569,7 +573,7 @@ PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
         "model__max_features": [0.4, 0.6, 1.0],
     },
     "ridge": {
-        "model__alpha": [100.0, 200.0, 300.0, 400.0, 500.0, 750.0, 1000.0],
+        "model__alpha": [0.01, 0.1, 1.0, 10.0, 100.0, 200.0, 300.0, 400.0, 500.0],
         "model__solver": ["auto", "svd", "lsqr"],
     },
     "elasticnet": {
@@ -660,7 +664,7 @@ COMPLEXITY_CONFIG: dict[str, dict] = {
     },
     "ridge": {
         "complexity_var": "alpha",
-        "complexity_range": np.logspace(2.5, 3.8, 25),
+        "complexity_range": np.logspace(-3, 3.8, 35), # desde 0.001 hasta ~6300
         "xlabel": "alpha (escala log — menor alpha = mayor complejidad)",
         "log_scale": True,
         "invert_xaxis": True,
