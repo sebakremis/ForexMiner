@@ -20,7 +20,8 @@ __pycache__/
 tmp/
 
 # Carpeta de datos
-data/
+data
 
 # Gestion de clave API
 /src/data_sources.py 
+
