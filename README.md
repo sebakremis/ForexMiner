@@ -148,9 +148,9 @@ FOREXMINER/
 ├── data/                            # Ubicación por defecto de los datos
 │   ├── clean_data/                  # Datos depurados obtenidos en la transformación
 │   ├── evaluations/                 # Contiene los resultados obtenidos en la evaluación
-│   ├── predictions/                 # Predicciones completas por modelo para usar en Backtesting
+│   ├── predictions/                 # Predicciones completas por modelo para Backtesting
 │   ├── raw_data/                    # Datos crudos obtenidos de la extracción
-│   ├── cols_filtrar.json            # Fichero que almacena el diccionario de columnas a excluir
+│   ├── cols_filtrar.json            # Fichero de columnas a excluir
 ├── notebooks/                       # Sub-directorio de notebooks
 │   ├── EDA.ipynb                    # Análisis Exploratorio de Datos (EDA)
 │   ├── evaluar_modelos.ipynb        # Evaluación y optimización de modelos
