@@ -42,12 +42,12 @@ Permite entrenar y analizar distintos modelos predictivos de regresión. Se sele
 
 El módulo incluye prueba de validación cruzada con partición de series temporales y evaluación de resultados para cualquiera de los modelos.
 
-Además `eval_utils.py` contiene funciones auxiliares de ejecución independiente para la busqueda de hiper-parámetros óptimos, gráfico de curva de complejidad y explicabilidad de las predicciones con SHAP. Las mismas pueden ser ejecutadas en el notebook `evaluar_modelos.ipynb`.
+Además `eval_utils.py` contiene funciones auxiliares de ejecución independiente para la busqueda de hiper-parámetros óptimos, gráfico de curva de complejidad y explicabilidad de las predicciones con SHAP. Las mismas pueden ser ejecutadas en el notebook `eval_models.ipynb`.
 
 ![Ejemplo de explicabilidad con SHAP](./pictures/plot_shap.png)
 
 ### **Filtrado (opcional)**:
-El módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruído. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables *random*). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en las modelizaciones subsiguientes.
+El módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruído. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables *random*). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filter.json`, y serán excluidas en las modelizaciones subsiguientes.
 
 ![Filtrado de variables ruidosas](./pictures/plot_filtro.png)
 
@@ -112,7 +112,7 @@ Genera el fichero de columnas *"ruidosas"*, las cuales serán omitidas en la fas
 ```bash
 python -m src.modeling --evaluar --modelo ridge
 ```
-Permite entrenar el modelo indicado. La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluacion_modelos`.
+Permite entrenar el modelo indicado. La inclusión del parámetro `--evaluar` habilita la evaluación del modelo mediante validación cruzada, exportando los resultados a un fichero .xlsx en la carpeta `evaluations`.
 
 - Ejecución del flujo completo:
 
@@ -150,10 +150,10 @@ FOREXMINER/
 │   ├── evaluations/                 # Contiene los resultados obtenidos en la evaluación
 │   ├── predictions/                 # Predicciones completas por modelo para Backtesting
 │   ├── raw_data/                    # Datos crudos obtenidos de la extracción
-│   ├── cols_filtrar.json            # Fichero de columnas a excluir
+│   ├── cols_filter.json             # Fichero de columnas a excluir
 ├── notebooks/                       # Sub-directorio de notebooks
 │   ├── EDA.ipynb                    # Análisis Exploratorio de Datos (EDA)
-│   ├── evaluar_modelos.ipynb        # Evaluación y optimización de modelos
+│   ├── eval_models.ipynb            # Evaluación y optimización de modelos
 ├── pictures/                        # Almacenamiento de imágenes para la documentación
 ├── src/                             # Sub-directorio con los módulos de funciones 
 │   ├── __init__.py                  # Fichero vacío, inicializa la carpeta como paquete

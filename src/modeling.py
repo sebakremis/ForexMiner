@@ -57,7 +57,7 @@ def cargar_datos_clean()->pd.DataFrame:
 
 
 def cargar_cols_filtrar()->dict:
-    fichero = Path(CARPETA_DATOS) / "cols_filtrar.json"
+    fichero = Path(CARPETA_DATOS) / "cols_filter.json"
     try:
         with open(fichero, "r", encoding="utf-8") as file:
             excluir_dict = json.load(file)
