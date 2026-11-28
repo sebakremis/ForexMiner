@@ -159,6 +159,7 @@ FOREXMINER/
 │   ├── config.py                    # Configuración global del proyecto 
 │   ├── data_sources.example.py      # Fichero ejemplo para gestionar la clave API de Fred
 │   ├── eda_utils.py                 # Funciones para el notebook de análisis exploratorio de datos
+│   ├── eval_utils.py                # Funciones independientes para la evaluación de modelos
 │   ├── extract.py                   # Módulo de la fase de extracción
 │   ├── filtering.py                 # Módulo opcional para el filtrado de columnas
 │   ├── modeling.py                  # Módulo de la fase de modelado
