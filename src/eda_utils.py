@@ -8,7 +8,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
-from typing import Optional
 import scipy.stats as stats
 
 def mostrar_asimetrias(df:pd.DataFrame):

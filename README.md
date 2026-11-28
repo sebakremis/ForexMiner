@@ -19,17 +19,19 @@ El proyecto esta diseñado para realizar predicciones contemporáneas en t (sema
 
 ## 📊 Fases
 
-El flujo cuenta con tres fases principales ETL, una fase opcional de filtrado y un Notebook exploratorio de datos:
-### **Extracción**: 
+El flujo cuenta con 3 fases principales de Extracción, Transformación y Modelado Además existe una fase opcional de filtrado de variables y Notebooks de exploración de datos y evaluación de modelos:
+### **Extracción** | `extract.py`: 
 Obtención de datos a través de 2 APIs gratuitas: `yfinance` y `fred` (la segunda requiere obtener una clave api, se gestiona en la página oficial de la Reserva Federal: https://fred.stlouisfed.org/docs/api/api_key.html). Las intrucciones para ingresar tu clave en el repositorio local se encuentran en el fichero `src/data_sources.examples.py`.
-### **Transformación**: 
+### **Transformación** | `transform.py`: 
 Sobre los datos crudos se aplica tratamiento de valores inválidos, alineaciones de fechas e imputación de valores perdidos. 
 
 Se calculan los retornos por divisa a partir de los retornos de los pares Forex, obteniendo el retorno del USD de forma implícita. A partir de estos retornos se obtienen las caracteristicas, aplicando la exposición por divisa para cada variable macro y de otros activos (variables *no Forex*). El cálculo de las exposiciones permite relacionar dichas *features* con cada moneda, a fin de aplicar luego el modelado de la variable objetivo `Target_rank`, la cual calcula el ranking semanal de los retornos por divisa. 
 
 Se estandarizan las variables mediante z-score exponencial. Finalmente se aplica lag sobre los predictores, desplazadas un período a fin de evitar el sesgo de anticipación (*Lookahead Bias*).
-### **Modelado**: 
-Permite entrenar y analizar distintos modelos predictivos de regresión. Se selecciona el modelo a utilizar ingresando con el parámetro `modelo` el nombre correspondiente:
+### **Modelado** | `modeling.py`:
+
+
+Permite entrenar y analizar distintos modelos predictivos de regresión. Se selecciona el modelo a utilizar ingresando con el parámetro *"modelo"* el nombre correspondiente:
 
 * **RandomForestRegressor**: `rf` (modelo por defecto)
 * **ExtraTreesRegressor**: `et`
@@ -40,17 +42,17 @@ Permite entrenar y analizar distintos modelos predictivos de regresión. Se sele
 
 El módulo incluye prueba de validación cruzada con partición de series temporales y evaluación de resultados para cualquiera de los modelos.
 
-Además se presentan funciones auxiliares de ejecución independiente para la busqueda de hiper-parámetros óptimos, gráfico de curva de complejidad y explicabilidad de las predicciones con SHAP.
+Además `eval_utils.py` contiene funciones auxiliares de ejecución independiente para la busqueda de hiper-parámetros óptimos, gráfico de curva de complejidad y explicabilidad de las predicciones con SHAP. Las mismas pueden ser ejecutadas en el notebook `evaluar_modelos.ipynb`.
 
 ![Ejemplo de explicabilidad con SHAP](./pictures/plot_shap.png)
 
 ### **Filtrado (opcional)**:
-El módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruído. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables *random*). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en la siguiente modelización.
+El módulo `filtering.py` detecta las variables que se encuentren por debajo de un umbral de ruído. Dicho umbral se define mediante la V de Cramer, calculando el valor percentil para una serie de variables aleatorias (por defecto la mediana de 100 variables *random*). Las variables que se encuentren por debajo del umbral se almacenan en el fichero `cols_filtrar.json`, y serán excluidas en las modelizaciones subsiguientes.
 
 ![Filtrado de variables ruidosas](./pictures/plot_filtro.png)
 
 ### **Análisis Exploratorio de Datos (EDA):**
-El fichero `notebook_EDA.ipynb` permite realizar un análisis exploratorio de los datos transformados, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a la variable objetivo (agrupada en 3 clases para facilitar la visualización).
+El notebook `EDA.ipynb` permite realizar un análisis exploratorio de los datos transformados, incluyendo análisis de asimetrías, valores faltantes, gráficos de distribuciones, correlaciones y gráficos de violines representando las variables seleccionadas frente a la variable objetivo (agrupada en 3 clases para facilitar la visualización).
 
 ![Graficar violines](./pictures/Screenshot_violines.png)
 
@@ -148,6 +150,10 @@ FOREXMINER/
 │   ├── evaluacion_modelos/          # Almacena los resultados obtenidos en el modelado
 │   ├── raw_data/                    # Sub-directorio para almacenar los datos crudos
 │   ├── cols_filtrar.json            # Fichero que almacena el diccionario de columnas a excluir
+├── notebooks/                       # Sub-directorio de notebooks
+│   ├── EDA.ipynb                    # Análisis Exploratorio de Datos (EDA)
+│   ├── evaluar_modelos.ipynb        # Evaluación y optimización de modelos
+├── pictures/                        # Almacenamiento de imágenes para la documentación
 ├── src/                             # Sub-directorio con los módulos de funciones 
 │   ├── __init__.py                  # Fichero vacío, inicializa la carpeta como paquete
 │   ├── config.py                    # Configuración global del proyecto 
@@ -159,7 +165,6 @@ FOREXMINER/
 │   └── transform.py                 # Módulo de la fase transformación
 ├── .gitignore                       # Reglas de git ignore
 ├── main.py                          # Programa principal para ejecutar el flujo completo del proyecto
-├── notebook_EDA.ipynb               # Análisis Exploratorio de Datos (EDA)
 ├── LICENSE                          # Licencia del proyecto
 ├── README.md                        # Descripción del proyecto
 └── requirements.txt                 # Dependencias necesarias
