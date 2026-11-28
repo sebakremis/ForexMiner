@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue.svg)
 ![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-Pipeline-green)
 
-Este proyecto implementa un pipeline ETL (Extracción, Transformación y Carga) para construir un dataset financiero destinado al modelado predictivo, rankeando los retornos semanales de las principales divisas Forex:
+Este proyecto implementa un pipeline ETL (Extracción, Transformación y Carga) para construir un dataset financiero destinado al modelado predictivo con *Machine Learning*, rankeando los retornos logarítmicos semanales para las principales divisas Forex:
 * `USD`: el dólar de Estados Unidos.
 * `EUR`: el euro.
 * `AUD`: dólar australiano.
@@ -12,7 +12,7 @@ Este proyecto implementa un pipeline ETL (Extracción, Transformación y Carga) 
 * `CAD`: el dólar canadiense.
 * `CHF`: franco suizo.
 
-El proyecto esta diseñado para realizar predicciones contemporáneas en t (semana en curso), luego de la apertura del lunes de los mercados de Nueva York. La ejecución durante el fin de semana permite evaluar las predicciones para la semana previa.
+El proyecto esta diseñado para realizar predicciones contemporáneas en **t** (semana en curso), luego de la apertura del lunes de los mercados de Nueva York. La ejecución durante el fin de semana permite evaluar las predicciones de la semana previa.
 
 ### Ejemplo de Predicciones (ranking descendente):
 ![Ejemplo de predicciones](./pictures/Screenshot_predicciones.png)
