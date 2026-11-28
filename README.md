@@ -19,7 +19,7 @@ El proyecto esta diseñado para realizar predicciones contemporáneas en t (sema
 
 ## 📊 Fases
 
-El flujo cuenta con 3 fases principales de Extracción, Transformación y Modelado Además existe una fase opcional de filtrado de variables y Notebooks de exploración de datos y evaluación de modelos:
+El flujo cuenta con 3 fases principales de Extracción, Transformación y Modelado. Además existe una fase opcional de filtrado de variables y Notebooks de exploración de datos y evaluación de modelos:
 ### **Extracción** | `extract.py`: 
 Obtención de datos a través de 2 APIs gratuitas: `yfinance` y `fred` (la segunda requiere obtener una clave api, se gestiona en la página oficial de la Reserva Federal: https://fred.stlouisfed.org/docs/api/api_key.html). Las intrucciones para ingresar tu clave en el repositorio local se encuentran en el fichero `src/data_sources.examples.py`.
 ### **Transformación** | `transform.py`: 
