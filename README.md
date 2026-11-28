@@ -146,9 +146,10 @@ Por otro lado, se extraen mediante la api Fred los siguientes datos macroeconóm
 ```text
 FOREXMINER/
 ├── data/                            # Ubicación por defecto de los datos
-│   ├── clean_data/                  # Almacena los datos depurados
-│   ├── evaluacion_modelos/          # Almacena los resultados obtenidos en el modelado
-│   ├── raw_data/                    # Sub-directorio para almacenar los datos crudos
+│   ├── clean_data/                  # Datos depurados obtenidos en la transformación
+│   ├── evaluations/                 # Contiene los resultados obtenidos en la evaluación
+│   ├── predictions/                 # Predicciones completas por modelo para usar en Backtesting
+│   ├── raw_data/                    # Datos crudos obtenidos de la extracción
 │   ├── cols_filtrar.json            # Fichero que almacena el diccionario de columnas a excluir
 ├── notebooks/                       # Sub-directorio de notebooks
 │   ├── EDA.ipynb                    # Análisis Exploratorio de Datos (EDA)
@@ -158,14 +159,14 @@ FOREXMINER/
 │   ├── __init__.py                  # Fichero vacío, inicializa la carpeta como paquete
 │   ├── config.py                    # Configuración global del proyecto 
 │   ├── data_sources.example.py      # Fichero ejemplo para gestionar la clave API de Fred
-│   ├── eda_utils.py                 # Funciones para el notebook de análisis exploratorio de datos
+│   ├── eda_utils.py                 # Funciones para el notebook EDA
 │   ├── eval_utils.py                # Funciones independientes para la evaluación de modelos
 │   ├── extract.py                   # Módulo de la fase de extracción
 │   ├── filtering.py                 # Módulo opcional para el filtrado de columnas
 │   ├── modeling.py                  # Módulo de la fase de modelado
 │   └── transform.py                 # Módulo de la fase transformación
 ├── .gitignore                       # Reglas de git ignore
-├── main.py                          # Programa principal para ejecutar el flujo completo del proyecto
+├── main.py                          # Programa para ejecutar el flujo completo
 ├── LICENSE                          # Licencia del proyecto
 ├── README.md                        # Descripción del proyecto
 └── requirements.txt                 # Dependencias necesarias

@@ -314,10 +314,36 @@ def _extract_feature_importance(
     return pd.Series(raw_imp, index=feature_names).sort_values(ascending=False)
 
 
+def guardar_predicciones(
+        X_train:pd.DataFrame,
+        X_live:pd.DataFrame,
+        y_pred_train:pd.Series,
+        y_pred_live:pd.Series,
+        nombre_modelo:str
+):
+    # Generar df de predicciones completas: Se extraen fecha y moneda de X_train
+    df_pred_train = X_train.index.to_frame(index=False)[["date", "Currency"]]
+    df_pred_train["Prediction"] = y_pred_train
+    df_pred_train["Split"] = "train"
+
+    df_pred_live = X_live.index.to_frame(index=False)[["date", "Currency"]]
+    df_pred_live["Prediction"] = y_pred_live
+    df_pred_live["Split"] = "live"
+
+    df_pred = pd.concat([df_pred_train, df_pred_live], axis=0, ignore_index=True)
+
+
+    fichero = Path(CARPETA_DATOS) / f"predictions/{nombre_modelo}.parquet"
+    fichero.parent.mkdir(parents=True, exist_ok=True)
+    df_pred.to_parquet(fichero)
+    print(f'\nPredicciones guardadas en {Path(fichero)}')
+
+
 def evaluar_modelo(
         model:Any,
         X_train: pd.DataFrame,
         y_train: pd.DataFrame | pd.Series,
+        y_pred_train:pd.Series,
         n_splits:int = 5,
         top_n: int=10
     ) -> Dict[str, Any]:
@@ -338,9 +364,7 @@ def evaluar_modelo(
         estimator = model
         transformed_names = feature_names
         n_features = X_train.shape[1]
-
-    # Predicciones sobre el dataset de entrenamientos completo
-    y_pred_train = model.predict(X_train)
+  
 
     # Metricas de entrenamiento
     n_samples = X_train.shape[0]
@@ -438,13 +462,13 @@ def registrar_evaluacion_excel(
     ultima_fecha: Any,
     modelo: str,
     y_pred: Any,
-    filepath: str = "historico_modelos_reg.xlsx",
+    filepath: str = "reg_models.xlsx",
 ) -> None:
     """
     Guarda o anexa los resultados de evaluar_modelo (regresión) y sus metadatos
     en un libro de Excel estructurado.
     """
-    path = Path(CARPETA_DATOS) / f"evaluacion_modelos/{filepath}"
+    path = Path(CARPETA_DATOS) / f"evaluations/{filepath}"
     run_id = f"{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -531,7 +555,7 @@ def registrar_evaluacion_excel(
                         writer, sheet_name="Log_Features", index=False
                     )
 
-    print(f"Registro exitoso para run_id: {run_id} en '{path.name}'")
+    print(f"\nRegistro exitoso para run_id: {run_id} en '{path.name}'")
 
 
 '''
@@ -560,10 +584,10 @@ def main(
     pipe.fit(X_train, y_train)
 
     # Realizar predicciones
-    y_live_pred = pipe.predict(X_live)
+    y_pred_live = pipe.predict(X_live)
     resultados = pd.DataFrame({
         'Currency': X_live.index.get_level_values("Currency").values,
-        'Prediction': y_live_pred
+        'Prediction': y_pred_live
     })
     resultados = resultados.sort_values(by='Prediction', ascending=False).to_string(index=False)
 
@@ -572,13 +596,28 @@ def main(
     print(f"\nPredicciones para la semana del {ultima_fecha}:")
     print(resultados)
 
-    # Evaluar modelo
+    # Evaluar modelo con CV, se almacenan los resultados y las predicciones completas
     if evaluar:
+        # Predicciones sobre df_train completo
+        y_pred_train = pipe.predict(X_train)
+
+        # Almacenar predicciones completas (para Backtesting)
+        guarda_predicciones = True
+        if guarda_predicciones:
+            guardar_predicciones(
+                X_train=X_train,
+                X_live=X_live,
+                y_pred_train=y_pred_train,
+                y_pred_live = y_pred_live,
+                nombre_modelo=nombre_modelo
+                )
+        
         print(f"\nEvaluación del modelo {nombre_modelo}:")
         dict_evaluacion = evaluar_modelo(
-            model=pipe, 
+            model=pipe,
             X_train=X_train, 
-            y_train=y_train
+            y_train=y_train,
+            y_pred_train=y_pred_train
             )
 
         registrar_evaluacion_excel(
@@ -587,6 +626,8 @@ def main(
             modelo = nombre_modelo,
             y_pred=resultados # prediccion del modelo completo sobre la ultima fecha
         )
+
+
 
 
 def entrypoint_modeling(argv: Sequence[str] | None = None):
