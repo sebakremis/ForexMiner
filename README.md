@@ -64,19 +64,19 @@ El notebook `EDA.ipynb` permite realizar un análisis exploratorio de los datos 
 
 El modelado con *Random Forest* muestra un alto *bias*. A pesar de no mostrar sobreajuste y extraer señales de forma consistente, el poder predictivo es bajo, con varianza explicada promedio de apenas el 9 %. Este resultado es previsible dada la naturaleza ruidosa y no estacionaria de los datos financieros, asi como la disponibilidad limitada de datos gratuitos.
 
-### Curva de Complejidad:
+#### Curva de Complejidad:
 ![Curva de complejidad creciente](./pictures/curva_rf.png)
 
 * El error disminuye rápidamente desde `max_depth=1` `hasta max_depth=5`.
 * A partir de `max_depth=5`, la curva de *test* se aplana. El ajuste en *train* sigue mejorando, aumentando la brecha. Casi toda la ganancia en entrenamiento en este tramo corresponde a memorización de patrones no generalizables.
 * El punto óptimo se encuentra con una profundidad máxima entre 4 y 5, donde la brecha aún es baja. Aplicando además el Principio de Parsimonia, es preferible el modelo más simple, con `max_depth=4`, minimizando la memorización de interacciones espurias de variables.
-
+---
 ### *Ridge*
 ![Evaluacion modelo ridge](./pictures/Screenshot_eval_ridge.png)
 
 Este modelo también muestra *underfitting*, con capacidad predictiva limitada aunque superior al *RandomForest*, con una varianza explicada en *test* por encima del 14%. 
 
-### Curva de Complejidad:
+#### Curva de Complejidad:
 ![Curva de complejidad creciente](./pictures/curva_ridge.png)
 
 * La brecha entre entrenamiento y validación cruzada es mínima, mostrando una capacidad de generalización elevada y estable.
@@ -136,7 +136,7 @@ Se extraen de `yfinance` las series de precios semanales para los 6 pares forex 
 Por otro lado, se extraen mediante la api Fred los siguientes datos macroeconómicos con granularidad diaria:
 * `Real_yield_10y`: rendimiento real de los bonos del tesoro de USA a 10 años.
 * `T10Y2Y`: spread entre los rendimientos de los bonos USA de 10 y 2 años.
-* `VIX index`: índice de volatilidad CBOE.
+* `VIX_index`: índice de volatilidad CBOE.
 * `St_louis_financial_stress`: índice de estrés financiero de la Reseva Federal de St. Louis (datos publicados semanalmente).
 
 

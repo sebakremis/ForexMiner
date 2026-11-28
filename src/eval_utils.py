@@ -12,7 +12,8 @@ from typing import Any
 import shap
 
 from sklearn.model_selection import (
-    GridSearchCV, TimeSeriesSplit, cross_validate
+    GridSearchCV, TimeSeriesSplit, cross_validate,
+    validation_curve
     )
 
 from src.modeling import (
@@ -180,33 +181,45 @@ def curva(
 
         tscv = TimeSeriesSplit(n_splits=n_splits)
 
-        for value in complexity_range:
-            # Modelo completo:
-            pipe = construir_regression_pipe(
-                X_sample=X_train,
-                model_name=modelo, 
-                **{complexity_var: value}
-                )
+        # Instanciar el pipeline
+        pipe = construir_regression_pipe(
+            X_sample=X_train, 
+            model_name=modelo
+        )
 
-            # Test de validacion cruzada
-            cv_results = cross_validate(
-                estimator = pipe,
-                X=X_train,
-                y=y_train,
-                cv=tscv,
-                scoring='neg_root_mean_squared_error',
-                return_train_score=True,
-                n_jobs=-1
-            )
-            
-            # Metricas sobre entrenamiento y test
-            train_scores.append(cv_results['train_score'].mean())
-            test_scores.append(cv_results['test_score'].mean())
+        # Detectar el nombre del parametro dentro del pipeline
+        if hasattr(pipe, "steps"):
+            last_step_name = pipe.steps[-1][0]
+            param_name = f"{last_step_name}__{complexity_var}"
 
+            # Evitar oversubscription de CPU si el estimador ya tiene n_jobs=-1
+            estimator = pipe.steps[-1][0]
+            if hasattr(estimator, "n_jobs") and estimator.n_jobs == -1:
+                pipe.set_params(**{f"{last_step_name}__n_jobs": 1})
 
+        else:
+            param_name = complexity_var
+            if hasattr(pipe, "n_jobs") and pipe.n_jobs == -1:
+                pipe.set_params(n_jobs=1)
+
+        # Ejecutar la curva
+        train_scores, test_scores = validation_curve(
+            estimator=pipe,
+            X=X_train,
+            y=y_train,
+            param_name=param_name,
+            param_range=complexity_range,
+            cv=tscv,
+            scoring="neg_root_mean_squared_error",
+            n_jobs=-1
+        )
+        train_mean = np.mean(train_scores, axis=1)
+        test_mean = np.mean(test_scores, axis=1)
+
+        # Graficar con Matplotlib
         plt.figure(figsize=(8, 4.5))
-        plt.plot(complexity_range, train_scores, marker="o", label="Train -RMSE (Aproximación al sesgo)")
-        plt.plot(complexity_range, test_scores, marker="s", label="Test CV -RMSE (Generalización)")
+        plt.plot(complexity_range, train_mean, marker="o", label="Train -RMSE (Aproximación al sesgo)")
+        plt.plot(complexity_range, test_mean, marker="s", label="Test CV -RMSE (Generalización)")
 
         if cfg.get("log_scale"):
             plt.xscale("log")
